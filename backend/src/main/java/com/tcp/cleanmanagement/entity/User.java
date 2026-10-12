@@ -21,7 +21,7 @@ public class User {
     private String password;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false)
+    @Column(nullable = false, columnDefinition = "varchar(20)")
     private Role role;
 
     private String fcmToken;

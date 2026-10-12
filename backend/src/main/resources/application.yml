@@ -17,3 +17,9 @@ spring:
       host: localhost
       port: 6379
       password: redispass
+
+jwt:
+  # 최소 256비트(32자) 이상의 비밀키
+  secret: tcp-clean-management-secret-key-2026-very-secure-jwt-key-for-b2b-dashboard
+  expiration-minutes: 480
+

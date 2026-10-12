@@ -19,9 +19,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
         registry.addInterceptor(rateLimitInterceptor)
                 .addPathPatterns("/api/public/**");
                 
-        // Apply JWT Auth to Admin APIs
+        // Apply JWT Auth to Admin APIs (+ 내 정보 조회). /api/auth/login 은 인증 없이 접근
         registry.addInterceptor(jwtAuthInterceptor)
-                .addPathPatterns("/api/admin/**");
+                .addPathPatterns("/api/admin/**", "/api/auth/me");
     }
 
     @Override
