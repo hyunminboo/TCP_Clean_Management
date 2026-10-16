@@ -411,182 +411,14 @@ const mergeLiveRows = (previous, liveRows) => {
   return [...merged, ...previous.filter(r => !r.isLive && !liveIds.includes(r.id))];
 };
 
-// 하드웨어 미연결 시에도 화장실1~4가 즉시 표시되도록 초기 관제 구역 데이터 구성
-const INITIAL_RESTROOMS = [
-  {
-    id: 1,
-    name: '1층 제1화장실 (남)',
-    floor: '1F',
-    gender: '남',
-    deviceId: 'ESP32-WC-1F-01',
-    macAddress: 'AA:BB:CC:DD:EE:01',
-    temp: 23.4,
-    humidity: 48.2,
-    gas: 215,
-    status: 'RECEIVING',
-    isActive: true,
-    isLive: true,
-    ingestSource: 'direct_api',
-    lastUpdated: '방금 전',
-    lastCleanedHours: 1.5,
-    cleanWorker: '김철수',
-    lat: 37.5668,
-    lng: 126.9785
-  },
-  {
-    id: 2,
-    name: '1층 제2화장실 (여)',
-    floor: '1F',
-    gender: '여',
-    deviceId: 'ESP32-WC-1F-02',
-    macAddress: 'AA:BB:CC:DD:EE:02',
-    temp: 24.1,
-    humidity: 52.0,
-    gas: 460,
-    status: 'WARN',
-    isActive: true,
-    isLive: true,
-    ingestSource: 'direct_api',
-    lastUpdated: '1분 전',
-    lastCleanedHours: 5.0,
-    cleanWorker: '이영희',
-    lat: 37.5665,
-    lng: 126.9789
-  },
-  {
-    id: 3,
-    name: '2층 제1화장실 (남)',
-    floor: '2F',
-    gender: '남',
-    deviceId: 'ESP32-WC-2F-01',
-    macAddress: 'AA:BB:CC:DD:EE:03',
-    temp: 29.2,
-    humidity: 74.5,
-    gas: 760,
-    status: 'DANGER',
-    isActive: true,
-    isLive: true,
-    ingestSource: 'direct_api',
-    lastUpdated: '방금 전',
-    lastCleanedHours: 8.5,
-    cleanWorker: '박영수',
-    lat: 37.5671,
-    lng: 126.9782
-  },
-  {
-    id: 4,
-    name: '2층 제2화장실 (여)',
-    floor: '2F',
-    gender: '여',
-    deviceId: 'ESP32-WC-2F-02',
-    macAddress: 'AA:BB:CC:DD:EE:04',
-    temp: 22.8,
-    humidity: 45.0,
-    gas: 185,
-    status: 'NORMAL',
-    isActive: true,
-    isLive: false,
-    ingestSource: 'mysql',
-    lastUpdated: '2분 전',
-    lastCleanedHours: 2.0,
-    cleanWorker: '최미정',
-    lat: 37.5663,
-    lng: 126.9778
-  }
-];
+// 초기 상태 (백엔드 MySQL DB로부터 실제 관제 데이터 로드)
+const INITIAL_RESTROOMS = [];
+const INITIAL_ALERTS = [];
+const INITIAL_CLEANING_LOGS = [];
+const INITIAL_PACKET_LOGS = [];
 
-const INITIAL_ALERTS = [
-  {
-    id: 101,
-    time: '14:15',
-    restroom: '2층 제1화장실 (남)',
-    metric: '악취 위험',
-    value: '760 ADC',
-    level: 'DANGER',
-    isChecked: false,
-    memo: 'MQ-135 암모니아/황화수소 위험 임계값(700) 초과 · 즉시 환기 및 물청소 요망'
-  },
-  {
-    id: 102,
-    time: '13:50',
-    restroom: '1층 제2화장실 (여)',
-    metric: '가스 주의',
-    value: '460 ADC',
-    level: 'WARN',
-    isChecked: false,
-    memo: 'MQ-135 주의 기준(400) 도달 · 방향제 및 환풍기 가동 상태 확인 요망'
-  },
-  {
-    id: 103,
-    time: '12:30',
-    restroom: '1층 제1화장실 (남)',
-    metric: '정기 점검',
-    value: '215 ADC',
-    level: 'NORMAL',
-    isChecked: true,
-    memo: '정오 정기 위생 점검 및 세면대 소독 완료'
-  }
-];
-
-const INITIAL_CLEANING_LOGS = [
-  {
-    id: 201,
-    time: '2026. 10. 16. 오후 12:30',
-    restroomName: '1층 제1화장실 (남)',
-    worker: '김철수 (환경미화 1팀)',
-    type: '정기 청소',
-    memo: '바닥 물청소, 변기 살균 세정 및 페이퍼타월 보충 완료'
-  },
-  {
-    id: 202,
-    time: '2026. 10. 16. 오전 11:40',
-    restroomName: '2층 제2화장실 (여)',
-    worker: '최미정 (환경미화 2팀)',
-    type: '위생 소독',
-    memo: '세면대 거울 클리닝 및 알코올 소독 완료'
-  },
-  {
-    id: 203,
-    time: '2026. 10. 16. 오전 09:00',
-    restroomName: '1층 제2화장실 (여)',
-    worker: '이영희 (환경미화 1팀)',
-    type: '비품 보충',
-    memo: '각 티슈 및 핸드워시 원액 보충 완료'
-  }
-];
-
-const INITIAL_PACKET_LOGS = INITIAL_RESTROOMS.map(r => ({
-  id: r.id,
-  time: new Date().toLocaleTimeString('ko-KR'),
-  deviceId: r.deviceId,
-  payload: `TEMP:${r.temp},HUM:${r.humidity},MQ135_ADC:${r.gas}`,
-  status: r.isActive ? 'OK' : 'FAIL'
-}));
-
-// MySQL 이력이 비어 있을 때도 시간 범위(1h/6h/24h/7d)에 맞춰 자연스러운 추이 그래프를 생성
-const buildFallbackHistoryPoints = (restroom, range) => {
-  const now = Date.now();
-  const hours = range === '7d' ? 168 : Number.parseInt(range, 10) || 1;
-  const count = 24;
-  const stepMs = (hours * 3600000) / count;
-  const baseTemp = Number(restroom?.temp) || 23.5;
-  const baseHum = Number(restroom?.humidity) || 50.0;
-  const baseGas = Number(restroom?.gas) || 240;
-  const baseMq7 = Number(restroom?.mq7) || 120;
-  const seed = Number(restroom?.id) || 1;
-
-  return Array.from({ length: count + 1 }, (_, idx) => {
-    const wave = Math.sin((idx + seed) * 0.55);
-    const cosWave = Math.cos((idx + seed) * 0.4);
-    return {
-      measuredAt: new Date(now - (count - idx) * stepMs).toISOString(),
-      temperatureC: Number((baseTemp + wave * 1.1).toFixed(1)),
-      humidityPercent: Number((baseHum + cosWave * 3.5).toFixed(1)),
-      mq135Adc: Math.max(80, Math.round(baseGas + wave * 42 + (idx === count ? 0 : cosWave * 18))),
-      mq7Adc: Math.max(40, Math.round(baseMq7 + wave * 25 + (idx === count ? 0 : cosWave * 12)))
-    };
-  });
-};
+// 측정 이력이 없을 때는 가짜 데이터를 생성하지 않고 빈 배열을 반환합니다.
+const buildFallbackHistoryPoints = () => [];
 
 const MONO_FONT = '"SF Mono", "Fira Code", Menlo, monospace';
 
@@ -622,10 +454,10 @@ export default function AdminPage() {
   const [rawRestrooms, setRestrooms] = useState(INITIAL_RESTROOMS);
   const [alerts, setAlerts] = useState(INITIAL_ALERTS);
   const [cleaningLogs, setCleaningLogs] = useState(() => loadStoredCleaningLogs(INITIAL_CLEANING_LOGS));
-  const [selectedRestroom, setSelectedRestroom] = useState(INITIAL_RESTROOMS[0]);
-  const [dataLoading, setDataLoading] = useState(false);
+  const [selectedRestroom, setSelectedRestroom] = useState(null);
+  const [dataLoading, setDataLoading] = useState(true);
   const [dataError, setDataError] = useState('');
-  const [historyPoints, setHistoryPoints] = useState(() => buildFallbackHistoryPoints(INITIAL_RESTROOMS[0], '1h'));
+  const [historyPoints, setHistoryPoints] = useState([]);
   const [chartRange, setChartRange] = useState('1h');
   const [lastUpdatedTime, setLastUpdatedTime] = useState(new Date().toLocaleTimeString('ko-KR'));
 
@@ -636,7 +468,7 @@ export default function AdminPage() {
 
   // 청소 관리 페이지 전용 상태 (SCR-05)
   const [cleanFilterRestroom, setCleanFilterRestroom] = useState('ALL');
-  const [cleanFormRestroomId, setCleanFormRestroomId] = useState(INITIAL_RESTROOMS[0].id);
+  const [cleanFormRestroomId, setCleanFormRestroomId] = useState('');
   const [cleanFormWorker, setCleanFormWorker] = useState(user?.username === 'cleaner' ? '이순신 (위생미화)' : user?.username || '관리자');
   const [cleanFormType, setCleanFormType] = useState('정기 청소');
   const [cleanFormMemo, setCleanFormMemo] = useState('');
@@ -1720,7 +1552,15 @@ export default function AdminPage() {
         </div>
         {/* Chart.js가 창 크기 변화를 따라가려면 컨테이너가 relative여야 합니다. */}
         <div style={{ position: 'relative', height: '280px', width: '100%', minWidth: 0 }}>
-          <Line data={generateChartData()} options={chartOptions} />
+          {historyPoints && historyPoints.length > 0 ? (
+            <Line data={generateChartData()} options={chartOptions} />
+          ) : (
+            <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', color: '#94a3b8', fontSize: '13px' }}>
+              <IconWind size={24} style={{ marginBottom: '8px' }} />
+              <span>실시간 센서 측정 이력 데이터 수집 대기 중</span>
+              <span style={{ fontSize: '11px', color: '#cbd5e1', marginTop: '4px' }}>IoT 하드웨어 기기에서 센서 데이터가 수집되면 실시간 시계열 추이 차트가 자동으로 표시됩니다.</span>
+            </div>
+          )}
         </div>
       </div>
     );
