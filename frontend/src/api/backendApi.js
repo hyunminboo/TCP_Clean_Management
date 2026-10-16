@@ -377,3 +377,136 @@ export const loginApi = async (username, password) => {
   return response.json();
 };
 
+/**
+ * 기기 세트 수정 API (PATCH)
+ */
+export const updateDeviceSetApi = async (deviceSetId, updateData) => {
+  const response = await fetch(`${BASE_URL}/api/admin/device-sets/${deviceSetId}`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(updateData)
+  });
+  if (!response.ok) throw new Error(`기기 정보 수정 실패 (${response.status})`);
+  return response.json();
+};
+
+/**
+ * 기기 세트 삭제 API (DELETE)
+ */
+export const deleteDeviceSetApi = async (deviceSetId) => {
+  const response = await fetch(`${BASE_URL}/api/admin/device-sets/${deviceSetId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders()
+  });
+  if (!response.ok) throw new Error(`기기 삭제 실패 (${response.status})`);
+  return true;
+};
+
+/**
+ * 미화원 목록 조회 API
+ */
+export const fetchWorkersApi = async (status = null) => {
+  try {
+    const url = `${BASE_URL}/api/admin/workers${status ? `?status=${status}` : ''}`;
+    const response = await fetch(url, { headers: getAuthHeaders() });
+    if (!response.ok) return [];
+    return response.json();
+  } catch (e) {
+    return [];
+  }
+};
+
+/**
+ * 미화원 신규 등록 API
+ */
+export const createWorkerApi = async (workerData) => {
+  const response = await fetch(`${BASE_URL}/api/admin/workers`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(workerData)
+  });
+  if (!response.ok) throw new Error(`미화원 등록 실패 (${response.status})`);
+  return response.json();
+};
+
+/**
+ * 미화원 상태 변경 API (AVAILABLE, DISPATCHED, OFF_DUTY)
+ */
+export const updateWorkerStatusApi = async (workerId, status) => {
+  const response = await fetch(`${BASE_URL}/api/admin/workers/${workerId}/status`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ status })
+  });
+  if (!response.ok) throw new Error(`미화원 상태 변경 실패 (${response.status})`);
+  return response.json();
+};
+
+/**
+ * 미화원 삭제 API
+ */
+export const deleteWorkerApi = async (workerId) => {
+  const response = await fetch(`${BASE_URL}/api/admin/workers/${workerId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders()
+  });
+  if (!response.ok) throw new Error(`미화원 삭제 실패 (${response.status})`);
+  return true;
+};
+
+/**
+ * 중앙 시스템 운영 설정 조회 API
+ */
+export const fetchSystemSettingsApi = async () => {
+  try {
+    const response = await fetch(`${BASE_URL}/api/admin/settings`, {
+      headers: getAuthHeaders()
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch (e) {
+    return null;
+  }
+};
+
+/**
+ * 중앙 시스템 운영 설정 갱신 API
+ */
+export const updateSystemSettingsApi = async (settingsMap, adminId = 1) => {
+  const response = await fetch(`${BASE_URL}/api/admin/settings?adminId=${adminId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(settingsMap)
+  });
+  if (!response.ok) throw new Error(`설정 저장 실패 (${response.status})`);
+  return response.json();
+};
+
+/**
+ * 일일 청소 체크리스트 조회 API
+ */
+export const fetchDailyChecklistApi = async (zoneId, date = '') => {
+  try {
+    const url = `${BASE_URL}/api/admin/checklists?zoneId=${zoneId}${date ? `&date=${date}` : ''}`;
+    const response = await fetch(url, { headers: getAuthHeaders() });
+    if (!response.ok) return [];
+    return response.json();
+  } catch (e) {
+    return [];
+  }
+};
+
+/**
+ * 일일 청소 체크리스트 토글 API
+ */
+export const toggleDailyChecklistApi = async (payload) => {
+  const response = await fetch(`${BASE_URL}/api/admin/checklists/toggle`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw new Error(`체크리스트 저장 실패 (${response.status})`);
+  return response.json();
+};
+
+

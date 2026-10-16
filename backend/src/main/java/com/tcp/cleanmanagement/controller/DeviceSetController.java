@@ -38,4 +38,10 @@ public class DeviceSetController {
     public List<DeviceSetHistoryResponse> history(@PathVariable Long deviceSetId) {
         return deviceSetService.history(deviceSetId);
     }
+
+    @DeleteMapping("/api/admin/device-sets/{deviceSetId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable Long deviceSetId) {
+        deviceSetService.delete(deviceSetId);
+    }
 }

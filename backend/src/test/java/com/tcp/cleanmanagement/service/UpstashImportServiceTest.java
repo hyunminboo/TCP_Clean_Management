@@ -18,6 +18,13 @@ class UpstashImportServiceTest {
     @Autowired SensorDataRawRepository rawRepository;
     @Autowired IotDataService iotDataService;
 
+    @org.junit.jupiter.api.BeforeEach
+    void setUp() {
+        for (String m : java.util.List.of("AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02", "AA:BB:CC:DD:EE:03", "AA:BB:CC:DD:EE:04", "AA:BB:CC:DD:EE:05", "AA:BB:CC:DD:EE:06", "AA:BB:CC:DD:EE:07")) {
+            deviceRepository.deleteById(m);
+        }
+    }
+
     @Test
     void registersDeviceImportsAllMetricsAndDeduplicatesAfterReload() {
         String mac = "AA:BB:CC:DD:EE:01";

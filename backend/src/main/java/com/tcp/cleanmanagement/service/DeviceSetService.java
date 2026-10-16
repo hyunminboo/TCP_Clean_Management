@@ -166,6 +166,20 @@ public class DeviceSetService {
                 .toList();
     }
 
+    @Transactional
+    public void delete(Long deviceSetId) {
+        DeviceSet set = deviceSetRepository.findById(deviceSetId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Device set not found"));
+        List<Sensor> sensors = sensorRepository.findByDeviceSetIdForUpdate(deviceSetId);
+        for (Sensor sensor : sensors) {
+            sensor.setDeviceSet(null);
+            sensorRepository.save(sensor);
+        }
+        historyRepository.findByDeviceSetIdOrderByIdDesc(deviceSetId)
+                .forEach(historyRepository::delete);
+        deviceSetRepository.delete(set);
+    }
+
     private void initializeHistory(DeviceSet set) {
         DeviceSetHistory history = historyRepository.findFirstByDeviceSetIdOrderByIdDesc(set.getId())
                 .orElseGet(() -> appendHistory(set));

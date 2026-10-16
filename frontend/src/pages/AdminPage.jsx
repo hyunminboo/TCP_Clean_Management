@@ -18,6 +18,16 @@ import {
   createCleaningRecordApi,
   fetchDeviceSetsApi,
   fetchDeviceSetHistoryApi,
+  updateDeviceSetApi,
+  deleteDeviceSetApi,
+  fetchWorkersApi,
+  createWorkerApi,
+  updateWorkerStatusApi,
+  deleteWorkerApi,
+  fetchSystemSettingsApi,
+  updateSystemSettingsApi,
+  fetchDailyChecklistApi,
+  toggleDailyChecklistApi,
   fetchUpstashStatusApi,
   loadStoredCleaningLogs,
   persistCleaningLog
@@ -500,8 +510,43 @@ export default function AdminPage() {
   const [upstashStatus, setUpstashStatus] = useState(null);
   const [deviceSets, setDeviceSets] = useState([]);
 
+  // 미화원 인원 DB 상태
+  const [workers, setWorkers] = useState([]);
+  const cleanersList = useMemo(() => {
+    if (workers && workers.length > 0) {
+      return workers.map(w => ({
+        id: String(w.id),
+        name: w.name,
+        team: w.role || '위생기동반',
+        roleDesc: w.role || '현장 점검 관리',
+        status: w.status === 'AVAILABLE' ? '대기 중 (즉시 출동)' : w.status === 'DISPATCHED' ? '현장 작업 중' : '휴무',
+        isAvailable: w.status === 'AVAILABLE',
+        phone: w.phone
+      }));
+    }
+    return AVAILABLE_CLEANERS;
+  }, [workers]);
+
   // 임계값을 바꾸면 실측 장치의 상태도 바로 다시 계산합니다.
   const restrooms = useMemo(() => rawRestrooms.map(r => withLiveStatus(r, thresholds)), [rawRestrooms, thresholds]);
+
+  // 구역 신규 등록 모달 (POST /api/dev/zones 및 /api/admin/zones)
+  const [isAddZoneModalOpen, setIsAddZoneModalOpen] = useState(false);
+  const [newZoneName, setNewZoneName] = useState('');
+  const [newZoneFloor, setNewZoneFloor] = useState('1F');
+  const [newZoneAddress, setNewZoneAddress] = useState('서울특별시 중구 세종대로 110');
+  const [newZoneLat, setNewZoneLat] = useState('37.566826');
+  const [newZoneLng, setNewZoneLng] = useState('126.978656');
+  const [newZoneType, setNewZoneType] = useState('TOILET');
+
+  // 기기 세트 수정 모달 (PATCH /api/admin/device-sets/{id})
+  const [isEditDeviceSetModalOpen, setIsEditDeviceSetModalOpen] = useState(false);
+  const [editingDeviceSet, setEditingDeviceSet] = useState(null);
+
+  // 기기 세트 변경 이력 모달 (GET /api/admin/device-sets/{id}/history)
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [deviceSetHistories, setDeviceSetHistories] = useState([]);
+  const [historyDeviceSetTitle, setHistoryDeviceSetTitle] = useState('');
 
   // 화장실 등록 모달 상태 (설정 탭 내)
   const [isAddRestroomModalOpen, setIsAddRestroomModalOpen] = useState(false);
@@ -541,11 +586,26 @@ export default function AdminPage() {
     vent: false
   });
 
-  const toggleChecklistItem = (key) => {
-    const next = { ...cleanChecklist, [key]: !cleanChecklist[key] };
-    const checkedCount = Object.values(next).filter(Boolean).length;
+  const toggleChecklistItem = async (key) => {
+    const nextVal = !cleanChecklist[key];
+    const next = { ...cleanChecklist, [key]: nextVal };
     setCleanChecklist(next);
+    const checkedCount = Object.values(next).filter(Boolean).length;
     showToast(`위생 점검 체크리스트: ${checkedCount}/6 항목 완료`);
+
+    const targetZoneId = (selectedRestroom?.id && typeof selectedRestroom.id === 'number') ? selectedRestroom.id : 3;
+    const todayStr = new Date().toISOString().slice(0, 10);
+    try {
+      await toggleDailyChecklistApi({
+        zoneId: targetZoneId,
+        date: todayStr,
+        itemKey: key,
+        isCompleted: nextVal,
+        completedBy: user?.id || 1
+      });
+    } catch (e) {
+      console.warn('체크리스트 DB 동기화 오류:', e);
+    }
   };
 
   // 청소 담당자 체크리스트 일괄 제출
@@ -824,6 +884,41 @@ export default function AdminPage() {
         });
       }
     }).catch(console.warn);
+
+    // 미화원 목록 조회 (DB에 없으면 기본 인원 시딩)
+    fetchWorkersApi().then(workersData => {
+      if (workersData && workersData.length > 0) {
+        setWorkers(workersData);
+      } else {
+        const seed = [
+          { name: '이순신', phone: '010-1234-5678', role: '위생기동반 (현장 기동)', status: 'AVAILABLE' },
+          { name: '김철수', phone: '010-2345-6789', role: '환경미화 1팀 (1층 전담)', status: 'AVAILABLE' },
+          { name: '이영희', phone: '010-3456-7890', role: '환경미화 1팀 (수유실 전담)', status: 'AVAILABLE' },
+          { name: '박영수', phone: '010-4567-8901', role: '환경미화 2팀 (2층 전담)', status: 'DISPATCHED' },
+          { name: '최미정', phone: '010-5678-9012', role: '환경미화 2팀 (편의시설 전담)', status: 'AVAILABLE' },
+          { name: '정우성', phone: '010-6789-0123', role: '야간/특수기동 (악취·설비 전담)', status: 'AVAILABLE' }
+        ];
+        Promise.all(seed.map(createWorkerApi)).then(created => {
+          setWorkers(created);
+        }).catch(console.warn);
+      }
+    }).catch(console.warn);
+
+    // 중앙 시스템 설정 조회
+    fetchSystemSettingsApi().then(settingsData => {
+      if (settingsData) {
+        setSystemSettings(prev => ({
+          ...prev,
+          offlineSeconds: Number(settingsData.offline_timeout_seconds || prev.offlineSeconds),
+          refreshSeconds: Number(settingsData.polling_interval_seconds || prev.refreshSeconds),
+          cleanWarnHours: Number(settingsData.clean_warning_interval_hours || prev.cleanWarnHours),
+          deviceKey: settingsData.device_key || prev.deviceKey
+        }));
+      }
+    }).catch(console.warn);
+
+    // 기기 세트 목록 조회
+    fetchDeviceSetsApi().then(setDeviceSets).catch(console.warn);
   }, []);
 
   // 시스템 설정 서브탭 진입 시 클라우드 Upstash 상태 및 기기 세트 목록 로드
@@ -987,8 +1082,8 @@ export default function AdminPage() {
     }
 
     // 기본 선택: 대기 중인 인원 우선 배정
-    const readyCleaners = AVAILABLE_CLEANERS.filter(c => c.isAvailable);
-    setSelectedCleanerIds(readyCleaners.length > 0 ? [readyCleaners[0].id] : ['cleaner1']);
+    const readyCleaners = cleanersList.filter(c => c.isAvailable);
+    setSelectedCleanerIds(readyCleaners.length > 0 ? [readyCleaners[0].id] : (cleanersList[0] ? [cleanersList[0].id] : ['1']));
     setDispatchType('긴급 바닥 청소 및 살균 소독');
     setDispatchUrgency('EMERGENCY');
     setDispatchMemo('청소 기준 시간 초과 구역 현장 점검 및 즉시 소독 조치 요망');
@@ -1012,7 +1107,7 @@ export default function AdminPage() {
 
   // 대기 인원 전체 선택
   const handleSelectAllAvailableCleaners = () => {
-    const availableIds = AVAILABLE_CLEANERS.filter(c => c.isAvailable).map(c => c.id);
+    const availableIds = cleanersList.filter(c => c.isAvailable).map(c => c.id);
     setSelectedCleanerIds(availableIds);
     showToast(`대기 중인 미화 인원 ${availableIds.length}명이 일괄 선택되었습니다.`);
   };
@@ -1024,8 +1119,17 @@ export default function AdminPage() {
       return;
     }
 
-    const selectedWorkers = AVAILABLE_CLEANERS.filter(c => selectedCleanerIds.includes(c.id));
+    const selectedWorkers = cleanersList.filter(c => selectedCleanerIds.includes(c.id));
     const workerNames = selectedWorkers.map(c => c.name);
+
+    // DB 내 미화원 상태 DISPATCHED로 갱신
+    for (const cid of selectedCleanerIds) {
+      const wId = Number(cid);
+      if (!isNaN(wId) && wId > 0) {
+        updateWorkerStatusApi(wId, 'DISPATCHED').catch(console.warn);
+      }
+    }
+    setWorkers(prev => prev.map(w => selectedCleanerIds.includes(String(w.id)) ? { ...w, status: 'DISPATCHED' } : w));
 
     // 대상 구역 산출
     let targetRestrooms = [];
@@ -1265,12 +1369,105 @@ export default function AdminPage() {
     }
   };
 
+  // 신규 관제 구역(건물/층) 생성 핸들러 (POST /api/dev/zones)
+  const handleCreateZone = async () => {
+    if (!newZoneName.trim()) {
+      alert('구역 명칭을 입력해주세요.');
+      return;
+    }
+    try {
+      setDataLoading(true);
+      await createBackendZone({
+        name: newZoneName.trim(),
+        floor: newZoneFloor,
+        address: newZoneAddress.trim(),
+        latitude: parseFloat(newZoneLat) || 37.566826,
+        longitude: parseFloat(newZoneLng) || 126.978656,
+        zoneType: newZoneType
+      });
+      showToast('신규 관제 구역이 DB(MySQL)에 등록되었습니다.');
+      setIsAddZoneModalOpen(false);
+      setNewZoneName('');
+      await handleManualRefresh();
+    } catch (err) {
+      console.error('구역 등록 실패:', err);
+      showToast('구역 등록 실패: ' + err.message);
+    } finally {
+      setDataLoading(false);
+    }
+  };
+
+  // 기기 세트 수정 열기 (PATCH /api/admin/device-sets/{id})
+  const handleOpenEditDeviceSet = (restroom) => {
+    const matchingSet = deviceSets.find(ds => ds.macAddress?.toLowerCase() === restroom.macAddress?.toLowerCase() || ds.zoneId === restroom.id);
+    setEditingDeviceSet({
+      id: matchingSet ? matchingSet.id : restroom.id,
+      label: matchingSet?.installationLabel || restroom.name,
+      zoneId: restroom.id,
+      macAddress: restroom.macAddress || restroom.deviceId || '24:DC:C3:99:AA:01'
+    });
+    setIsEditDeviceSetModalOpen(true);
+  };
+
+  // 기기 세트 수정 저장
+  const handleSaveEditDeviceSet = async () => {
+    if (!editingDeviceSet) return;
+    try {
+      setDataLoading(true);
+      await updateDeviceSetApi(editingDeviceSet.id, {
+        zoneId: Number(editingDeviceSet.zoneId),
+        installationLabel: editingDeviceSet.label,
+        macAddress: editingDeviceSet.macAddress
+      });
+      showToast('기기 세트 정보 및 설치 구역이 DB에 수정되었습니다.');
+      setIsEditDeviceSetModalOpen(false);
+      fetchDeviceSetsApi().then(setDeviceSets);
+      await handleManualRefresh();
+    } catch (err) {
+      console.error('기기 수정 실패:', err);
+      showToast('기기 수정 실패: ' + err.message);
+    } finally {
+      setDataLoading(false);
+    }
+  };
+
+  // 기기 세트 감사 히스토리 열기 (GET /api/admin/device-sets/{id}/history)
+  const handleOpenDeviceSetHistory = async (restroom) => {
+    const matchingSet = deviceSets.find(ds => ds.macAddress?.toLowerCase() === restroom.macAddress?.toLowerCase() || ds.zoneId === restroom.id);
+    const targetId = matchingSet ? matchingSet.id : (typeof restroom.id === 'number' ? restroom.id : 1);
+    setHistoryDeviceSetTitle(restroom.name);
+    try {
+      const hist = await fetchDeviceSetHistoryApi(targetId);
+      setDeviceSetHistories(hist);
+    } catch (err) {
+      setDeviceSetHistories([]);
+    }
+    setIsHistoryModalOpen(true);
+  };
+
+  // 중앙 시스템 운영 설정 저장 핸들러 (PUT /api/admin/settings)
+  const handleSaveSystemSettings = async () => {
+    try {
+      await updateSystemSettingsApi({
+        offline_timeout_seconds: String(systemSettings.offlineSeconds),
+        polling_interval_seconds: String(systemSettings.refreshSeconds),
+        clean_warning_interval_hours: String(systemSettings.cleanWarnHours),
+        device_key: systemSettings.deviceKey
+      }, user?.id || 1);
+      localStorage.setItem('tcp_system_settings', JSON.stringify(systemSettings));
+      showToast('시스템 설정이 백엔드 DB(MySQL)에 영구 저장되었습니다.');
+    } catch (err) {
+      console.warn('설정 저장 실패:', err);
+      showToast('설정 저장 중 오류가 발생했습니다.');
+    }
+  };
+
   const handleCheckAlert = async (id, e) => {
     if (e && e.stopPropagation) e.stopPropagation();
     setAlerts(prev => prev.map(a => a.id === id ? { ...a, isChecked: true } : a));
     try {
       if (typeof id === 'number' && id < 1000000000000) {
-        await resolveAlertApi(id, '현장 확인 및 조치 완료');
+        await resolveAlertApi(id, '현장 확인 및 조치 완료', user?.id || 1);
         showToast('알림 조치 사항이 DB에 저장되었습니다.');
       } else {
         showToast('확인 완료되었습니다.');
@@ -2533,6 +2730,56 @@ export default function AdminPage() {
                   청소 완료 저장
                 </button>
               </form>
+
+              {/* 일일 위생 체크리스트 (MySQL daily_checklists 영속화) */}
+              <div style={{ marginTop: '20px', paddingTop: '16px', borderTop: '1px solid #f1f5f9' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                  <h4 style={{ margin: 0, fontSize: '12px', fontWeight: '700', color: '#0f172a' }}>
+                    📋 당일 위생 체크리스트
+                  </h4>
+                  <span style={{ fontSize: '10px', color: '#166534', fontWeight: '600' }}>
+                    DB 자동 저장
+                  </span>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  {[
+                    { key: 'floor', label: '바닥 물청소·건조 및 소독' },
+                    { key: 'sink', label: '세면대·거울 소독 및 물얼룩 제거' },
+                    { key: 'toilet', label: '변기 살균 세정 및 수압 점검' },
+                    { key: 'soap', label: '휴지·비누·손소독제 보충' },
+                    { key: 'trash', label: '쓰레기통 비움·위생봉투 교체' },
+                    { key: 'vent', label: '환풍기 가동·디퓨저 향기 점검' }
+                  ].map(item => {
+                    const isChecked = !!cleanChecklist[item.key];
+                    return (
+                      <label
+                        key={item.key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          fontSize: '12px',
+                          color: isChecked ? '#166534' : '#334155',
+                          backgroundColor: isChecked ? '#f0fdf4' : '#f8fafc',
+                          padding: '6px 10px',
+                          borderRadius: '6px',
+                          border: isChecked ? '1px solid #bbf7d0' : '1px solid #e2e8f0',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleChecklistItem(item.key)}
+                        />
+                        <span style={{ textDecoration: isChecked ? 'line-through' : 'none' }}>
+                          {item.label}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
             {/* ③ 청소 이력 테이블 (FR-51) */}
@@ -2785,9 +3032,14 @@ export default function AdminPage() {
                     <span style={{ fontSize: '11px', color: '#64748b' }}>모니터링 대상 화장실과 아두이노 기기 매핑을 관리합니다.</span>
                   </div>
 
-                  <button onClick={() => setIsAddRestroomModalOpen(true)} style={styles.primaryBtn}>
-                    <IconPlus /> 신규 화장실 등록
-                  </button>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button onClick={() => setIsAddZoneModalOpen(true)} style={styles.secondaryBtn}>
+                      <IconPlus /> 신규 구역 등록
+                    </button>
+                    <button onClick={() => setIsAddRestroomModalOpen(true)} style={styles.primaryBtn}>
+                      <IconPlus /> 신규 화장실 등록
+                    </button>
+                  </div>
                 </div>
 
                 <table style={styles.table}>
@@ -2827,6 +3079,24 @@ export default function AdminPage() {
                               }}
                             >
                               {r.isActive ? '비활성화' : '활성화'}
+                            </button>
+                            <button
+                              onClick={() => handleOpenEditDeviceSet(r)}
+                              style={{
+                                ...styles.actionBtnSmall,
+                                color: '#2563eb'
+                              }}
+                            >
+                              수정
+                            </button>
+                            <button
+                              onClick={() => handleOpenDeviceSetHistory(r)}
+                              style={{
+                                ...styles.actionBtnSmall,
+                                color: '#4f46e5'
+                              }}
+                            >
+                              이력
                             </button>
                             <button
                               onClick={() => handleDeleteRestroom(r.id)}
@@ -2959,7 +3229,7 @@ export default function AdminPage() {
                 </div>
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '20px' }}>
-                  <button onClick={() => showToast('시스템 설정이 저장되었습니다.')} style={styles.primaryBtn}>
+                  <button onClick={handleSaveSystemSettings} style={styles.primaryBtn}>
                     시스템 설정 저장
                   </button>
                 </div>
@@ -3272,7 +3542,7 @@ export default function AdminPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setSelectedCleanerIds(['cleaner1'])}
+                      onClick={() => setSelectedCleanerIds(cleanersList[0] ? [cleanersList[0].id] : ['1'])}
                       style={styles.cleanerQuickBtn}
                     >
                       기본 1인
@@ -3282,7 +3552,7 @@ export default function AdminPage() {
 
                 {/* 미화 인원 선택 그리드 */}
                 <div style={styles.cleanerGrid}>
-                  {AVAILABLE_CLEANERS.map(cleaner => {
+                  {cleanersList.map(cleaner => {
                     const isSelected = selectedCleanerIds.includes(cleaner.id);
                     return (
                       <div
@@ -3462,7 +3732,7 @@ export default function AdminPage() {
               <div style={{ fontSize: '12px', color: '#334155', display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <span style={{ fontWeight: '600', color: '#0f172a' }}>배정 인원:</span>
                 <span style={{ color: '#2563eb', fontWeight: '700' }}>
-                  {AVAILABLE_CLEANERS.filter(c => selectedCleanerIds.includes(c.id)).map(c => c.name).join(', ') || '없음'}
+                  {cleanersList.filter(c => selectedCleanerIds.includes(c.id)).map(c => c.name).join(', ') || '없음'}
                 </span>
                 <span style={{ color: '#64748b' }}>({selectedCleanerIds.length}명)</span>
               </div>
@@ -3496,6 +3766,190 @@ export default function AdminPage() {
                   <IconSend size={13} /> 출동 지시 발령 ({selectedCleanerIds.length}명)
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* 1. 신규 구역 등록 모달 */}
+      {isAddZoneModalOpen && (
+        <div style={styles.modalOverlay} onClick={() => setIsAddZoneModalOpen(false)}>
+          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h3 style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>신규 관제 구역 등록</h3>
+              <button onClick={() => setIsAddZoneModalOpen(false)} style={styles.modalClose}>&times;</button>
+            </div>
+            <div style={styles.modalBody}>
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>구역 명칭 (건물/층/화장실)</label>
+                <input
+                  type="text"
+                  placeholder="예: 본관 3층 화장실"
+                  value={newZoneName}
+                  onChange={e => setNewZoneName(e.target.value)}
+                  style={styles.formInput}
+                />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div style={styles.formGroup}>
+                  <label style={styles.formLabel}>층수</label>
+                  <select
+                    value={newZoneFloor}
+                    onChange={e => setNewZoneFloor(e.target.value)}
+                    style={styles.formSelect}
+                  >
+                    <option value="B1F">지하 1층 (B1F)</option>
+                    <option value="1F">1층 (1F)</option>
+                    <option value="2F">2층 (2F)</option>
+                    <option value="3F">3층 (3F)</option>
+                    <option value="4F">4층 (4F)</option>
+                  </select>
+                </div>
+                <div style={styles.formGroup}>
+                  <label style={styles.formLabel}>구역 유형</label>
+                  <select
+                    value={newZoneType}
+                    onChange={e => setNewZoneType(e.target.value)}
+                    style={styles.formSelect}
+                  >
+                    <option value="TOILET">화장실 (TOILET)</option>
+                    <option value="SMOKING">흡연구역 (SMOKING)</option>
+                  </select>
+                </div>
+              </div>
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>도로명 주소</label>
+                <input
+                  type="text"
+                  placeholder="예: 서울특별시 중구 세종대로 110"
+                  value={newZoneAddress}
+                  onChange={e => setNewZoneAddress(e.target.value)}
+                  style={styles.formInput}
+                />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                <div style={styles.formGroup}>
+                  <label style={styles.formLabel}>위도 (Latitude)</label>
+                  <input
+                    type="text"
+                    value={newZoneLat}
+                    onChange={e => setNewZoneLat(e.target.value)}
+                    style={styles.formInput}
+                  />
+                </div>
+                <div style={styles.formGroup}>
+                  <label style={styles.formLabel}>경도 (Longitude)</label>
+                  <input
+                    type="text"
+                    value={newZoneLng}
+                    onChange={e => setNewZoneLng(e.target.value)}
+                    style={styles.formInput}
+                  />
+                </div>
+              </div>
+            </div>
+            <div style={styles.modalFooter}>
+              <button onClick={() => setIsAddZoneModalOpen(false)} style={styles.secondaryBtn}>취소</button>
+              <button onClick={handleCreateZone} style={styles.primaryBtn}>구역 생성 완료</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 2. 기기 세트 수정 모달 (PATCH /api/admin/device-sets/{id}) */}
+      {isEditDeviceSetModalOpen && editingDeviceSet && (
+        <div style={styles.modalOverlay} onClick={() => setIsEditDeviceSetModalOpen(false)}>
+          <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h3 style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>기기 세트 정보 및 구역 수정</h3>
+              <button onClick={() => setIsEditDeviceSetModalOpen(false)} style={styles.modalClose}>&times;</button>
+            </div>
+            <div style={styles.modalBody}>
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>설치 라벨 명칭</label>
+                <input
+                  type="text"
+                  value={editingDeviceSet.label}
+                  onChange={e => setEditingDeviceSet({ ...editingDeviceSet, label: e.target.value })}
+                  style={styles.formInput}
+                />
+              </div>
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>배치 관제 구역 (Zone)</label>
+                <select
+                  value={editingDeviceSet.zoneId}
+                  onChange={e => setEditingDeviceSet({ ...editingDeviceSet, zoneId: e.target.value })}
+                  style={styles.formSelect}
+                >
+                  {accessibleRestrooms.map(r => (
+                    <option key={r.id} value={r.id}>{r.name} ({r.floor})</option>
+                  ))}
+                </select>
+              </div>
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>ESP32 MAC 주소</label>
+                <input
+                  type="text"
+                  value={editingDeviceSet.macAddress}
+                  onChange={e => setEditingDeviceSet({ ...editingDeviceSet, macAddress: e.target.value })}
+                  style={{ ...styles.formInput, fontFamily: 'monospace' }}
+                />
+              </div>
+            </div>
+            <div style={styles.modalFooter}>
+              <button onClick={() => setIsEditDeviceSetModalOpen(false)} style={styles.secondaryBtn}>취소</button>
+              <button onClick={handleSaveEditDeviceSet} style={styles.primaryBtn}>수정 사항 저장</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 3. 기기 세트 감사 히스토리 모달 (GET /api/admin/device-sets/{id}/history) */}
+      {isHistoryModalOpen && (
+        <div style={styles.modalOverlay} onClick={() => setIsHistoryModalOpen(false)}>
+          <div style={{ ...styles.modalContent, maxWidth: '640px' }} onClick={e => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>
+                  [{historyDeviceSetTitle}] 기기 변경 및 이전 감사 히스토리
+                </h3>
+                <span style={{ fontSize: '11px', color: '#64748b' }}>
+                  기기의 설치 위치 및 라벨 변경 감사 추적 기록입니다.
+                </span>
+              </div>
+              <button onClick={() => setIsHistoryModalOpen(false)} style={styles.modalClose}>&times;</button>
+            </div>
+            <div style={{ ...styles.modalBody, maxHeight: '350px', overflowY: 'auto' }}>
+              {deviceSetHistories.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: '30px 0', color: '#64748b', fontSize: '12px' }}>
+                  기록된 변경 이력이 없습니다.
+                </div>
+              ) : (
+                <table style={styles.table}>
+                  <thead>
+                    <tr style={styles.thRow}>
+                      <th style={styles.th}>변경 시각</th>
+                      <th style={styles.th}>세트 코드</th>
+                      <th style={styles.th}>설치 라벨</th>
+                      <th style={styles.th}>배치 구역</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {deviceSetHistories.map(h => (
+                      <tr key={h.historyId} style={styles.tr}>
+                        <td style={{ ...styles.td, fontSize: '11px' }}>
+                          {h.changedAt ? new Date(h.changedAt).toLocaleString('ko-KR') : '-'}
+                        </td>
+                        <td style={{ ...styles.td, fontFamily: 'monospace', fontSize: '11px' }}>{h.setCode}</td>
+                        <td style={styles.td}>{h.installationLabel}</td>
+                        <td style={styles.td}>{h.zoneName || `구역 #${h.zoneId}`}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            <div style={styles.modalFooter}>
+              <button onClick={() => setIsHistoryModalOpen(false)} style={styles.primaryBtn}>닫기</button>
             </div>
           </div>
         </div>

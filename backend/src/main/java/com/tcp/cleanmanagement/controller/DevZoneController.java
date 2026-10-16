@@ -8,7 +8,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
-@RequestMapping("/api/dev")
+@RequestMapping({"/api/dev", "/api/admin"})
 @RequiredArgsConstructor
 public class DevZoneController {
     private final DevZoneService devZoneService;
