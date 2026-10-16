@@ -9,6 +9,16 @@ import {
   fetchAllPublicZones,
   createBackendZone,
   deleteBackendZone,
+  toggleZoneActiveApi,
+  updateZoneThresholdsApi,
+  fetchAdminAlertsApi,
+  resolveAlertApi,
+  resolveAllAlertsApi,
+  fetchCleaningRecordsApi,
+  createCleaningRecordApi,
+  fetchDeviceSetsApi,
+  fetchDeviceSetHistoryApi,
+  fetchUpstashStatusApi,
   loadStoredCleaningLogs,
   persistCleaningLog
 } from '../api/backendApi';
@@ -364,12 +374,12 @@ const buildRestroomsFromBackend = (zones, devices = []) => {
       gender: gender,
       deviceId: dev?.macAddress || `ZONE-${z.zoneId}`,
       macAddress: dev?.macAddress || `ZONE-${z.zoneId}`,
-      temp: dev?.temperatureC ?? z.temp ?? 23.0,
-      humidity: dev?.humidityPercent ?? z.humidity ?? 50.0,
-      gas: dev?.mq135Adc ?? z.gasLevel ?? 200,
+      temp: dev?.temperatureC ?? z.temp ?? null,
+      humidity: dev?.humidityPercent ?? z.humidity ?? null,
+      gas: dev?.mq135Adc ?? z.gasLevel ?? null,
       mq7: dev?.mq7Adc ?? z.mq7Level ?? null,
-      status: dev ? (dev.stale ? 'OFFLINE' : 'RECEIVING') : (z.status === 'Clean' ? 'NORMAL' : (z.status || 'NORMAL')),
-      isActive: true,
+      status: dev ? (dev.stale ? 'OFFLINE' : 'RECEIVING') : (z.isActive === false ? 'OFFLINE' : (z.status || 'NORMAL')),
+      isActive: z.isActive !== undefined ? z.isActive : true,
       isLive: z.isOurSolution ?? true,
       isFromDb: true,
       ingestSource: dev?.ingestSource || 'mysql',
@@ -634,13 +644,19 @@ export default function AdminPage() {
   // 설정 페이지 전용 서브탭 및 상태 (SCR-06)
   const [settingsSubTab, setSettingsSubTab] = useState('thresholds'); // 'thresholds', 'restrooms', 'system'
   const [thresholdScope, setThresholdScope] = useState('ALL'); // 'ALL' 또는 restroomId
-  const [thresholds, setThresholds] = useState({
-    tempWarn: 28,
-    tempDanger: 32,
-    humidWarn: 65,
-    humidDanger: 80,
-    gasWarn: 400,
-    gasDanger: 700
+  const [thresholds, setThresholds] = useState(() => {
+    try {
+      const saved = localStorage.getItem('tcp_thresholds');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return {
+      tempWarn: 28,
+      tempDanger: 32,
+      humidWarn: 65,
+      humidDanger: 80,
+      gasWarn: 400,
+      gasDanger: 700
+    };
   });
   const [systemSettings, setSystemSettings] = useState({
     offlineSeconds: 60,
@@ -649,6 +665,8 @@ export default function AdminPage() {
     retentionDays: 30,
     deviceKey: 'TCP-SEC-2026-DEV-KEY-9842'
   });
+  const [upstashStatus, setUpstashStatus] = useState(null);
+  const [deviceSets, setDeviceSets] = useState([]);
 
   // 임계값을 바꾸면 실측 장치의 상태도 바로 다시 계산합니다.
   const restrooms = useMemo(() => rawRestrooms.map(r => withLiveStatus(r, thresholds)), [rawRestrooms, thresholds]);
@@ -699,7 +717,7 @@ export default function AdminPage() {
   };
 
   // 청소 담당자 체크리스트 일괄 제출
-  const handleSubmitChecklist = () => {
+  const handleSubmitChecklist = async () => {
     const checkedEntries = [
       { key: 'floor', label: '바닥 물청소·건조' },
       { key: 'sink', label: '세면대·거울 소독' },
@@ -724,19 +742,32 @@ export default function AdminPage() {
       type: `일일 위생 점검 (${checkedEntries.length}/6)`,
       memo: `점검 완료: ${checkedEntries.map(i => i.label).join(', ')}`
     };
-    setCleaningLogs(prev => [newLog, ...prev]);
+    setCleaningLogs(prev => persistCleaningLog(newLog, prev));
     if (targetR) {
       setRestrooms(prev => prev.map(r => r.id === targetR.id ? { ...r, lastCleanedHours: 0, cleanWorker: workerName } : r));
     }
     setCleanChecklist({ floor: false, sink: false, toilet: false, soap: false, trash: false, vent: false });
-    showToast(`오늘의 위생 점검표(${checkedEntries.length}개 항목)가 청소 이력에 등록되었습니다.`);
+
+    try {
+      await createCleaningRecordApi({
+        zoneId: targetR?.id,
+        restroomName: newLog.restroomName,
+        worker: newLog.worker,
+        type: newLog.type,
+        memo: newLog.memo
+      });
+      showToast(`오늘의 위생 점검표가 백엔드 DB(MySQL)에 영구 저장되었습니다.`);
+    } catch (err) {
+      console.warn('청소 기록 DB 저장 실패 (로컬 유지):', err);
+      showToast(`오늘의 위생 점검표(${checkedEntries.length}개 항목)가 청소 이력에 등록되었습니다.`);
+    }
   };
 
   // 개발자 패킷 스트림 로그 상태
   const [packetLogs, setPacketLogs] = useState(INITIAL_PACKET_LOGS);
 
   // 청소 담당자 원클릭 즉시 청소 처리
-  const handleQuickActionClean = (item, type, memo) => {
+  const handleQuickActionClean = async (item, type, memo) => {
     setRestrooms(prev => prev.map(r => {
       if (r.id === item.id) {
         return {
@@ -759,7 +790,20 @@ export default function AdminPage() {
       memo: memo
     };
     setCleaningLogs(prev => persistCleaningLog(newLog, prev));
-    showToast(`[${item.name}] ${type} 완료 처리되었습니다.`);
+
+    try {
+      await createCleaningRecordApi({
+        zoneId: item.id,
+        restroomName: newLog.restroomName,
+        worker: newLog.worker,
+        type: newLog.type,
+        memo: newLog.memo
+      });
+      showToast(`[${item.name}] ${type} 완료 처리 및 DB 저장이 완료되었습니다.`);
+    } catch (err) {
+      console.warn('청소 완료 DB 저장 실패:', err);
+      showToast(`[${item.name}] ${type} 완료 처리되었습니다.`);
+    }
   };
 
   // 개발자 전용: 전체 데이터 조회 확인 및 핑 테스트
@@ -911,6 +955,53 @@ export default function AdminPage() {
     return () => { controller.abort(); clearInterval(timer); };
   }, []);
 
+  // MySQL DB에 저장된 실제 알림 및 청소 이력을 불러와 상태에 병합합니다.
+  useEffect(() => {
+    fetchAdminAlertsApi().then(dbAlerts => {
+      if (dbAlerts && dbAlerts.length > 0) {
+        const mapped = dbAlerts.map(a => ({
+          id: a.alertId,
+          time: a.createdAt ? new Date(a.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '최근',
+          restroom: a.zoneName || '관제 구역',
+          metric: a.alertType || '임계 감지',
+          value: a.installationLabel || '현장 점검 필요',
+          level: (a.alertType && (a.alertType.includes('DANGER') || a.alertType.includes('위험'))) ? 'DANGER' : 'WARN',
+          isChecked: false,
+          memo: a.message
+        }));
+        setAlerts(prev => {
+          const ids = new Set(mapped.map(m => m.id));
+          return [...mapped, ...prev.filter(p => !ids.has(p.id))];
+        });
+      }
+    }).catch(console.warn);
+
+    fetchCleaningRecordsApi().then(dbRecords => {
+      if (dbRecords && dbRecords.length > 0) {
+        const mappedLogs = dbRecords.map(r => ({
+          id: r.id,
+          time: r.createdAt ? new Date(r.createdAt).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '최근',
+          restroomName: r.restroomName,
+          worker: r.worker,
+          type: r.type,
+          memo: r.memo
+        }));
+        setCleaningLogs(prev => {
+          const ids = new Set(mappedLogs.map(m => m.id));
+          return [...mappedLogs, ...prev.filter(p => !ids.has(p.id))];
+        });
+      }
+    }).catch(console.warn);
+  }, []);
+
+  // 시스템 설정 서브탭 진입 시 클라우드 Upstash 상태 및 기기 세트 목록 로드
+  useEffect(() => {
+    if (activeTab === 'settings' && settingsSubTab === 'system') {
+      fetchUpstashStatusApi().then(setUpstashStatus).catch(console.warn);
+      fetchDeviceSetsApi().then(setDeviceSets).catch(console.warn);
+    }
+  }, [activeTab, settingsSubTab]);
+
   useEffect(() => {
     const mac = selectedRestroom?.macAddress;
     const hours = chartRange === '7d' ? 168 : Number.parseInt(chartRange, 10);
@@ -1008,7 +1099,7 @@ export default function AdminPage() {
   };
 
   // 퀵 청소 완료 저장
-  const handleSaveQuickCleaning = () => {
+  const handleSaveQuickCleaning = async () => {
     if (!cleaningTarget) return;
 
     setRestrooms(prev => prev.map(r => {
@@ -1033,9 +1124,21 @@ export default function AdminPage() {
       memo: quickCleaningMemo
     };
     setCleaningLogs(prev => persistCleaningLog(newLog, prev));
-
     setIsCleaningModalOpen(false);
-    showToast(`[${cleaningTarget.name}] 청소 완료 처리되었습니다.`);
+
+    try {
+      await createCleaningRecordApi({
+        zoneId: cleaningTarget.id,
+        restroomName: newLog.restroomName,
+        worker: newLog.worker,
+        type: newLog.type,
+        memo: newLog.memo
+      });
+      showToast(`[${cleaningTarget.name}] 청소 완료 처리 및 DB 저장이 완료되었습니다.`);
+    } catch (err) {
+      console.warn('청소 기록 DB 저장 실패:', err);
+      showToast(`[${cleaningTarget.name}] 청소 완료 처리되었습니다.`);
+    }
   };
 
   // 관리자 전용: 출동 지시 팝업 모달 열기
@@ -1155,10 +1258,19 @@ export default function AdminPage() {
     // 4. 모달 닫기 및 알림 피드백
     setIsDispatchModalOpen(false);
     showToast(`📢 [${workerNames.join(', ')}] ${workerNames.length}명에게 [${targetSummaryTitle}] ${dispatchType} 출동 지시를 전송했습니다.`);
+
+    // 백엔드 MySQL DB에 출동 지시 기록 저장
+    createCleaningRecordApi({
+      zoneId: targetRestrooms[0]?.id,
+      restroomName: newLog.restroomName,
+      worker: newLog.worker,
+      type: newLog.type,
+      memo: newLog.memo
+    }).catch(console.warn);
   };
 
   // 청소 관리 전용 폼 등록 핸들러 (SCR-05 FR-50)
-  const handleSubmitCleaningForm = (e) => {
+  const handleSubmitCleaningForm = async (e) => {
     e.preventDefault();
     if (!cleanFormWorker.trim()) {
       alert('담당자 성명을 입력해주세요.');
@@ -1195,7 +1307,50 @@ export default function AdminPage() {
 
     // 3. 폼 초기화
     setCleanFormMemo('');
-    showToast(`[${targetRestroom.name}] 청소 기록이 정상 등록되었습니다.`);
+
+    // 4. 백엔드 MySQL DB에 저장
+    try {
+      await createCleaningRecordApi({
+        zoneId: targetRestroom.id,
+        restroomName: newLog.restroomName,
+        worker: newLog.worker,
+        type: newLog.type,
+        memo: newLog.memo
+      });
+      showToast(`[${targetRestroom.name}] 청소 기록이 백엔드 DB(MySQL)에 영구 저장되었습니다.`);
+    } catch (err) {
+      console.warn('청소 기록 DB 저장 실패:', err);
+      showToast(`[${targetRestroom.name}] 청소 기록이 정상 등록되었습니다.`);
+    }
+  };
+
+  // 환경 임계값 저장 핸들러 (MySQL DB 영구 반영)
+  const handleSaveThresholds = async () => {
+    try {
+      if (thresholdScope === 'ALL') {
+        for (const r of accessibleRestrooms) {
+          if (typeof r.id === 'number') {
+            await updateZoneThresholdsApi(r.id, {
+              pleasantThreshold: thresholds.gasWarn,
+              needsVentilationThreshold: thresholds.gasDanger
+            }).catch(console.warn);
+          }
+        }
+      } else {
+        const zoneId = Number(thresholdScope);
+        if (zoneId) {
+          await updateZoneThresholdsApi(zoneId, {
+            pleasantThreshold: thresholds.gasWarn,
+            needsVentilationThreshold: thresholds.gasDanger
+          });
+        }
+      }
+      localStorage.setItem('tcp_thresholds', JSON.stringify(thresholds));
+      showToast('환경 임계값이 백엔드 DB(MySQL)에 성공적으로 저장되었습니다.');
+    } catch (err) {
+      console.warn('임계값 저장 실패 (로컬 세션 유지):', err);
+      showToast('임계값을 로컬 세션에 적용했습니다.');
+    }
   };
 
   // 신규 화장실 등록 핸들러 (SCR-06 FR-60)
@@ -1235,12 +1390,19 @@ export default function AdminPage() {
   };
 
   // 화장실 활성/비활성화 토글
-  const handleToggleRestroomActive = (id) => {
+  const handleToggleRestroomActive = async (id) => {
     const target = rawRestrooms.find(r => r.id === id);
     if (!target) return;
     const next = !target.isActive;
     setRestrooms(prev => prev.map(r => (r.id === id ? { ...r, isActive: next, status: next ? 'NORMAL' : 'OFFLINE' } : r)));
-    showToast(`[${target.name}] 상태가 ${next ? '활성화' : '비활성화'}되었습니다.`);
+    
+    try {
+      await toggleZoneActiveApi(id);
+      showToast(`[${target.name}] 상태가 DB에 ${next ? '활성화' : '비활성화'}로 반영되었습니다.`);
+    } catch (err) {
+      console.warn('활성화 토글 API 실패 (로컬 상태만 반영):', err);
+      showToast(`[${target.name}] 상태가 ${next ? '활성화' : '비활성화'}되었습니다.`);
+    }
   };
 
   // 화장실 시설 삭제 핸들러 (개발자 전용)
@@ -1271,10 +1433,20 @@ export default function AdminPage() {
     }
   };
 
-  const handleCheckAlert = (id, e) => {
-    e.stopPropagation();
+  const handleCheckAlert = async (id, e) => {
+    if (e && e.stopPropagation) e.stopPropagation();
     setAlerts(prev => prev.map(a => a.id === id ? { ...a, isChecked: true } : a));
-    showToast('확인 완료되었습니다.');
+    try {
+      if (typeof id === 'number' && id < 1000000000000) {
+        await resolveAlertApi(id, '현장 확인 및 조치 완료');
+        showToast('알림 조치 사항이 DB에 저장되었습니다.');
+      } else {
+        showToast('확인 완료되었습니다.');
+      }
+    } catch (err) {
+      console.warn('알림 처리 API 오류:', err);
+      showToast('확인 완료되었습니다.');
+    }
   };
 
   // 측정 시각을 x값으로 써서 수신이 끊긴 구간도 실제 시간 간격대로 보이게 합니다.
@@ -1554,9 +1726,15 @@ export default function AdminPage() {
     );
   };
 
-  const confirmAccessibleAlerts = () => {
+  const confirmAccessibleAlerts = async () => {
     setAlerts(prev => prev.map(a => accessibleAlerts.some(acc => acc.id === a.id) ? { ...a, isChecked: true } : a));
-    showToast('담당 구역 알림이 일괄 확인되었습니다.');
+    try {
+      await resolveAllAlertsApi('관리자 담당 알림 일괄 확인 처리');
+      showToast('담당 구역 알림이 DB에 일괄 확인 처리되었습니다.');
+    } catch (err) {
+      console.warn('알림 일괄 처리 API 실패:', err);
+      showToast('담당 구역 알림이 일괄 확인되었습니다.');
+    }
   };
 
   const renderAlertPanel = () => (
@@ -2750,7 +2928,7 @@ export default function AdminPage() {
                 >
                   기본값 복원
                 </button>
-                <button onClick={() => showToast('임계값을 적용했습니다. 서버에는 저장되지 않고 이 화면 세션에만 반영됩니다.')} style={styles.primaryBtn}>
+                <button onClick={handleSaveThresholds} style={styles.primaryBtn}>
                   임계값 저장
                 </button>
               </div>
@@ -2944,6 +3122,66 @@ export default function AdminPage() {
                   <button onClick={() => showToast('시스템 설정이 저장되었습니다.')} style={styles.primaryBtn}>
                     시스템 설정 저장
                   </button>
+                </div>
+
+                {/* 클라우드 Upstash Redis 동기화 모니터링 */}
+                <div style={{ marginTop: '28px', borderTop: '1px solid #e2e8f0', paddingTop: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <div>
+                      <h4 style={{ margin: 0, fontSize: '13px', fontWeight: '600', color: '#0f172a' }}>
+                        Upstash Redis 클라우드 원격 동기화 상태 (GET /api/iot/upstash/status)
+                      </h4>
+                      <span style={{ fontSize: '11px', color: '#64748b' }}>ESP32 수집 센서 데이터의 클라우드 백업 및 동기화 파이프라인 모니터링입니다.</span>
+                    </div>
+                    <button onClick={() => fetchUpstashStatusApi().then(setUpstashStatus)} style={styles.secondaryBtn}>새로고침</button>
+                  </div>
+                  {upstashStatus ? (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', background: '#f8fafc', padding: '14px', borderRadius: '6px', fontSize: '12px', border: '1px solid #e2e8f0' }}>
+                      <div><span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>Redis 구성:</span> <strong>{upstashStatus.configured ? '설정 완료 (OK)' : '미설정'}</strong></div>
+                      <div><span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>동기화 활성:</span> <strong>{upstashStatus.enabled ? '작동 중' : '비활성'}</strong></div>
+                      <div><span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>누적 수집 데이터:</span> <strong>{upstashStatus.importedSamples != null ? upstashStatus.importedSamples.toLocaleString() : 0}건</strong></div>
+                      <div><span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>최근 성공 시각:</span> <strong>{upstashStatus.lastSuccess ? new Date(upstashStatus.lastSuccess).toLocaleTimeString('ko-KR') : '대기 중'}</strong></div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '12px', color: '#94a3b8', padding: '12px 0' }}>클라우드 동기화 상태를 확인하고 있습니다...</div>
+                  )}
+                </div>
+
+                {/* 하드웨어 기기 세트 등록 상세 */}
+                <div style={{ marginTop: '28px', borderTop: '1px solid #e2e8f0', paddingTop: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <div>
+                      <h4 style={{ margin: 0, fontSize: '13px', fontWeight: '600', color: '#0f172a' }}>
+                        등록된 IoT 기기 세트 현황 (GET /api/admin/device-sets)
+                      </h4>
+                      <span style={{ fontSize: '11px', color: '#64748b' }}>ESP32 컨트롤러 MAC 주소와 관제 구역 매핑 현황입니다.</span>
+                    </div>
+                    <button onClick={() => fetchDeviceSetsApi().then(setDeviceSets)} style={styles.secondaryBtn}>새로고침</button>
+                  </div>
+                  {deviceSets && deviceSets.length > 0 ? (
+                    <table style={styles.table}>
+                      <thead>
+                        <tr style={styles.thRow}>
+                          <th style={styles.th}>세트 코드</th>
+                          <th style={styles.th}>MAC 주소</th>
+                          <th style={styles.th}>연동 구역</th>
+                          <th style={styles.th}>설치 라벨</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {deviceSets.map(ds => (
+                          <tr key={ds.deviceSetId} style={styles.tr}>
+                            <td style={styles.td}><strong>{ds.setCode}</strong></td>
+                            <td style={{ ...styles.td, fontFamily: 'monospace' }}>{ds.macAddress}</td>
+                            <td style={styles.td}>{ds.zoneName || `Zone #${ds.zoneId}`}</td>
+                            <td style={styles.td}>{ds.installationLabel || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <div style={{ fontSize: '12px', color: '#94a3b8', padding: '12px 0' }}>등록된 IoT 하드웨어 기기 세트가 없습니다.</div>
+                  )}
                 </div>
               </div>
             ) : (

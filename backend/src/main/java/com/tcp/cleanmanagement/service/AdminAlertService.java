@@ -72,4 +72,12 @@ public class AdminAlertService {
                 .build();
         actionLogRepository.save(log);
     }
+
+    @Transactional
+    public void resolveAllAlerts(ActionRequest request) {
+        List<Alert> unresolved = alertRepository.findByStatus(AlertStatus.UNRESOLVED);
+        for (Alert a : unresolved) {
+            resolveAlert(a.getId(), request);
+        }
+    }
 }

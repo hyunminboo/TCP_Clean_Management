@@ -11,6 +11,7 @@ public class ZonePublicResponse {
     private Double latitude;
     private Double longitude;
     private Boolean isOurSolution;
+    private Boolean isActive;
     
     // IoT Data
     private Float temp;

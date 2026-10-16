@@ -53,4 +53,24 @@ public class DevZoneService {
                 .orElseThrow(() -> new IllegalArgumentException("Invalid Zone ID: " + id));
         zoneRepository.delete(zone);
     }
+
+    @Transactional
+    public Boolean toggleZoneActive(Long id) {
+        Zone zone = zoneRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Invalid Zone ID: " + id));
+        boolean current = zone.getIsActive() != null ? zone.getIsActive() : true;
+        zone.setIsActive(!current);
+        return zoneRepository.save(zone).getIsActive();
+    }
+
+    @Transactional
+    public Zone updateZone(Long id, ZoneCreateRequest request) {
+        Zone zone = zoneRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Invalid Zone ID: " + id));
+        if (request.getName() != null) zone.setName(request.getName());
+        if (request.getAddress() != null) zone.setAddress(request.getAddress());
+        if (request.getPleasantThreshold() != null) zone.setPleasantThreshold(request.getPleasantThreshold());
+        if (request.getNeedsVentilationThreshold() != null) zone.setNeedsVentilationThreshold(request.getNeedsVentilationThreshold());
+        return zoneRepository.save(zone);
+    }
 }

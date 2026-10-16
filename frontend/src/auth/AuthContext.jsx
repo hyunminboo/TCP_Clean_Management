@@ -105,8 +105,13 @@ export function AuthProvider({ children }) {
       }
 
       const data = await res.json();
-      const accessToken = data.accessToken;
-      const userInfo = data.user;
+      const accessToken = data.accessToken || data.token;
+      const userInfo = data.user || {
+        id: data.id,
+        username: data.username,
+        role: data.role,
+        zoneIds: data.role === ROLES.DEVELOPER ? [] : [1, 2, 3, 4]
+      };
 
       setToken(accessToken);
       setUser(userInfo);

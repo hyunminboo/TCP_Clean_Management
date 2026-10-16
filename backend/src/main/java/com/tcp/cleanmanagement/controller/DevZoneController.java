@@ -28,4 +28,14 @@ public class DevZoneController {
         devZoneService.deleteZone(id);
         return ResponseEntity.noContent().build();
     }
+
+    @PatchMapping("/zones/{id}/toggle-active")
+    public ResponseEntity<Boolean> toggleActive(@PathVariable Long id) {
+        return ResponseEntity.ok(devZoneService.toggleZoneActive(id));
+    }
+
+    @PutMapping("/zones/{id}")
+    public ResponseEntity<?> updateZone(@PathVariable Long id, @RequestBody ZoneCreateRequest request) {
+        return ResponseEntity.ok(devZoneService.updateZone(id, request));
+    }
 }

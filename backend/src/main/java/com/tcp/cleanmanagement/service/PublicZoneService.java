@@ -53,7 +53,8 @@ public class PublicZoneService {
                 .name(zone.getName())
                 .latitude(zone.getLatitude())
                 .longitude(zone.getLongitude())
-                .isOurSolution(zone.getIsOurSolution());
+                .isOurSolution(zone.getIsOurSolution())
+                .isActive(zone.getIsActive() != null ? zone.getIsActive() : true);
 
         Optional<SensorDataRaw> latestMq135 = latestSensorReading(zone.getId(), SensorModel.MQ135);
         if (latestMq135.isEmpty()) {

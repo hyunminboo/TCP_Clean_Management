@@ -27,4 +27,15 @@ public class AdminAlertController {
         adminAlertService.resolveAlert(alertId, request);
         return ResponseEntity.ok().build();
     }
+
+    @PostMapping("/batch-actions")
+    public ResponseEntity<Void> resolveAllAlerts(@RequestBody(required = false) ActionRequest request) {
+        if (request == null) {
+            request = new ActionRequest();
+            request.setActionDetail("관리자 일괄 확인 처리");
+            request.setAdminId(1L);
+        }
+        adminAlertService.resolveAllAlerts(request);
+        return ResponseEntity.ok().build();
+    }
 }

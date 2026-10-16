@@ -23,6 +23,8 @@ public class Zone {
     private ZoneType zoneType;
 
     private Boolean isOurSolution;
+    @Builder.Default
+    private Boolean isActive = true;
     private Float pleasantThreshold;
     private Float needsVentilationThreshold;
 
