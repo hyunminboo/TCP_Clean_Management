@@ -921,6 +921,23 @@ export default function AdminPage() {
     fetchDeviceSetsApi().then(setDeviceSets).catch(console.warn);
   }, []);
 
+  // 화장실 선택 시 해당 구역의 당일 위생 체크리스트 로드
+  useEffect(() => {
+    const targetZoneId = cleanFormRestroomId || selectedRestroom?.id || (accessibleRestrooms[0]?.id ? Number(accessibleRestrooms[0].id) : 3);
+    const todayStr = new Date().toISOString().slice(0, 10);
+    if (targetZoneId && typeof Number(targetZoneId) === 'number' && !isNaN(Number(targetZoneId))) {
+      fetchDailyChecklistApi(Number(targetZoneId), todayStr).then(items => {
+        if (items && items.length > 0) {
+          const map = {};
+          items.forEach(it => {
+            map[it.itemKey] = (it.completed !== undefined ? it.completed : it.isCompleted) ?? false;
+          });
+          setCleanChecklist(prev => ({ ...prev, ...map }));
+        }
+      }).catch(console.warn);
+    }
+  }, [cleanFormRestroomId, selectedRestroom?.id]);
+
   // 시스템 설정 서브탭 진입 시 클라우드 Upstash 상태 및 기기 세트 목록 로드
   useEffect(() => {
     if (activeTab === 'settings' && settingsSubTab === 'system') {
