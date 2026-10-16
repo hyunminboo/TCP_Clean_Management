@@ -228,7 +228,7 @@ class DeviceSetIntegrationTest {
         Zone zone = zone();
         DeviceSetResponse first = sets.register(registration(zone, "first"));
         DeviceSetRequest second = registration(zone, "second");
-        second.setExistingSensorIds(first.getSensorIds());
+        second.setExistingSensorIds((Map) first.getSensorIds());
         ResponseStatusException conflict = assertThrows(ResponseStatusException.class, () -> sets.register(second));
         assertEquals(HttpStatus.CONFLICT, conflict.getStatusCode());
         assertEquals(first.getSensorIds(), sets.configurationFor(first.getMacAddress()).getSensorIds());

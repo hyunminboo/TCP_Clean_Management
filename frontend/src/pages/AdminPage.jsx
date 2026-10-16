@@ -6,6 +6,13 @@ import Map from '../components/KakaoMapFrame';
 import SensorDataStatus from '../components/SensorDataStatus';
 import { fetchSensorDevices, fetchSensorHistory, snapshotToRestroom, formatReading } from '../api/sensorApi';
 import {
+  fetchAllPublicZones,
+  createBackendZone,
+  deleteBackendZone,
+  loadStoredCleaningLogs,
+  persistCleaningLog
+} from '../api/backendApi';
+import {
   Chart as ChartJS,
   CategoryScale,
   LinearScale,
@@ -340,15 +347,57 @@ const withLiveStatus = (row, t) => {
   return { ...row, status: row.isLive ? 'RECEIVING' : 'NORMAL' };
 };
 
+// 백엔드 MySQL DB의 Zone 목록과 실시간 센서 디바이스를 매핑하는 헬퍼 함수
+const buildRestroomsFromBackend = (zones, devices = []) => {
+  if (!zones || zones.length === 0) return [];
+
+  return zones.map((z, idx) => {
+    const dev = (devices || []).find(d => d.zoneId === z.zoneId || (d.macAddress && z.name && z.name.includes(d.macAddress)));
+    const floorMatch = (z.name || '').match(/(\d+)F|([B\d]+)층/i);
+    const floor = floorMatch ? (floorMatch[1] ? `${floorMatch[1]}F` : floorMatch[0]) : (idx % 2 === 0 ? '1F' : '2F');
+    const gender = (z.name || '').includes('여') ? '여' : (z.name || '').includes('남') ? '남' : '공용';
+
+    return {
+      id: z.zoneId,
+      name: z.name,
+      floor: floor,
+      gender: gender,
+      deviceId: dev?.macAddress || `ZONE-${z.zoneId}`,
+      macAddress: dev?.macAddress || `ZONE-${z.zoneId}`,
+      temp: dev?.temperatureC ?? z.temp ?? 23.0,
+      humidity: dev?.humidityPercent ?? z.humidity ?? 50.0,
+      gas: dev?.mq135Adc ?? z.gasLevel ?? 200,
+      mq7: dev?.mq7Adc ?? z.mq7Level ?? null,
+      status: dev ? (dev.stale ? 'OFFLINE' : 'RECEIVING') : (z.status === 'Clean' ? 'NORMAL' : (z.status || 'NORMAL')),
+      isActive: true,
+      isLive: z.isOurSolution ?? true,
+      isFromDb: true,
+      ingestSource: dev?.ingestSource || 'mysql',
+      lastUpdated: dev?.measuredAt ? new Date(dev.measuredAt).toLocaleTimeString('ko-KR') : '방금 전',
+      lastCleanedHours: 1.0,
+      cleanWorker: '담당자 미지정',
+      lat: z.latitude ?? 37.4979,
+      lng: z.longitude ?? 127.0276
+    };
+  });
+};
+
 // 서버 스냅샷으로 갱신하되, 화면에서 기록한 청소 정보와 화면에서 등록한 구역은 30초마다 지워지지 않게 합니다.
 // 주의: 이 파일은 지도 컴포넌트를 Map이라는 이름으로 가져오므로 내장 Map을 쓰지 않습니다.
 const mergeLiveRows = (previous, liveRows) => {
   if (!liveRows || liveRows.length === 0) return previous;
   const liveIds = liveRows.map(r => r.id);
+  const isFromDb = liveRows.some(r => r.isFromDb);
+
   const merged = liveRows.map(row => {
     const old = previous.find(r => r.id === row.id);
-    return old ? { ...row, cleanWorker: old.cleanWorker, lastCleanedHours: old.lastCleanedHours } : row;
+    return old ? { ...row, cleanWorker: old.cleanWorker, lastCleanedHours: old.lastCleanedHours, gender: old.gender || row.gender, floor: old.floor || row.floor } : row;
   });
+
+  if (isFromDb) {
+    // DB 데이터가 있으면 이전의 더미 데이터는 제거하고 DB 데이터 기준으로 완전 교체
+    return merged;
+  }
   return [...merged, ...previous.filter(r => !r.isLive && !liveIds.includes(r.id))];
 };
 
@@ -562,7 +611,7 @@ export default function AdminPage() {
   // 실시간 상태
   const [rawRestrooms, setRestrooms] = useState(INITIAL_RESTROOMS);
   const [alerts, setAlerts] = useState(INITIAL_ALERTS);
-  const [cleaningLogs, setCleaningLogs] = useState(INITIAL_CLEANING_LOGS);
+  const [cleaningLogs, setCleaningLogs] = useState(() => loadStoredCleaningLogs(INITIAL_CLEANING_LOGS));
   const [selectedRestroom, setSelectedRestroom] = useState(INITIAL_RESTROOMS[0]);
   const [dataLoading, setDataLoading] = useState(false);
   const [dataError, setDataError] = useState('');
@@ -709,7 +758,7 @@ export default function AdminPage() {
       type: type,
       memo: memo
     };
-    setCleaningLogs(prev => [newLog, ...prev]);
+    setCleaningLogs(prev => persistCleaningLog(newLog, prev));
     showToast(`[${item.name}] ${type} 완료 처리되었습니다.`);
   };
 
@@ -795,8 +844,14 @@ export default function AdminPage() {
   const handleManualRefresh = async () => {
     setDataLoading(true);
     try {
-      const devices = await fetchSensorDevices();
-      if (devices.length > 0) {
+      const [zones, devices] = await Promise.all([
+        fetchAllPublicZones().catch(() => []),
+        fetchSensorDevices().catch(() => [])
+      ]);
+      if (zones && zones.length > 0) {
+        const rows = buildRestroomsFromBackend(zones, devices);
+        setRestrooms(prev => mergeLiveRows(prev, rows));
+      } else if (devices && devices.length > 0) {
         const rows = devices.map((d, idx) => snapshotToRestroom(d, idx));
         setRestrooms(prev => mergeLiveRows(prev, rows));
       }
@@ -809,7 +864,7 @@ export default function AdminPage() {
     }
   };
 
-  // MySQL에 저장된 실측값이 있으면 병합하고, 없으면 기본 관제 구역을 유지합니다.
+  // MySQL에 저장된 실측값 및 관제 구역을 병합하고 30초마다 자동 갱신합니다.
   useEffect(() => {
     const controller = new AbortController();
     let pending = false;
@@ -818,10 +873,20 @@ export default function AdminPage() {
       if (pending) return;
       pending = true;
       try {
-        const devices = await fetchSensorDevices(controller.signal);
+        const [zones, devices] = await Promise.all([
+          fetchAllPublicZones(controller.signal).catch(() => []),
+          fetchSensorDevices(controller.signal).catch(() => [])
+        ]);
         if (controller.signal.aborted) return;
-        if (devices.length > 0) {
-          const rows = devices.map((d, idx) => snapshotToRestroom(d, idx));
+
+        let rows = [];
+        if (zones && zones.length > 0) {
+          rows = buildRestroomsFromBackend(zones, devices);
+        } else if (devices && devices.length > 0) {
+          rows = devices.map((d, idx) => snapshotToRestroom(d, idx));
+        }
+
+        if (rows.length > 0) {
           setRestrooms(prev => mergeLiveRows(prev, rows));
           setCleanFormRestroomId(previous => rows.some(row => row.id === Number(previous)) ? previous : (rows[0]?.id || 1));
           setPacketLogs(rows.map(row => ({
@@ -967,7 +1032,7 @@ export default function AdminPage() {
       type: '수시 점검',
       memo: quickCleaningMemo
     };
-    setCleaningLogs(prev => [newLog, ...prev]);
+    setCleaningLogs(prev => persistCleaningLog(newLog, prev));
 
     setIsCleaningModalOpen(false);
     showToast(`[${cleaningTarget.name}] 청소 완료 처리되었습니다.`);
@@ -1126,7 +1191,7 @@ export default function AdminPage() {
       type: cleanFormType,
       memo: cleanFormMemo || '특이사항 없음'
     };
-    setCleaningLogs(prev => [newLog, ...prev]);
+    setCleaningLogs(prev => persistCleaningLog(newLog, prev));
 
     // 3. 폼 초기화
     setCleanFormMemo('');
@@ -1134,41 +1199,39 @@ export default function AdminPage() {
   };
 
   // 신규 화장실 등록 핸들러 (SCR-06 FR-60)
-  const handleAddRestroom = () => {
-    if (!newRestroomName.trim() || !newRestroomDeviceId.trim()) {
-      alert('화장실 이름과 기기 ID를 모두 입력해주세요.');
+  const handleAddRestroom = async () => {
+    if (!newRestroomName.trim()) {
+      alert('화장실 명칭을 입력해주세요.');
       return;
     }
 
-    if (restrooms.some(r => r.deviceId === newRestroomDeviceId)) {
-      alert('이미 등록된 기기 ID입니다.');
-      return;
+    try {
+      setDataLoading(true);
+      // 1. 백엔드 MySQL DB에 신규 Zone 생성
+      await createBackendZone({
+        name: newRestroomName.trim(),
+        floor: newRestroomFloor,
+        gender: newRestroomGender,
+        deviceId: newRestroomDeviceId.trim(),
+        zoneType: 'TOILET',
+        pleasantThreshold: 300.0,
+        needsVentilationThreshold: 600.0
+      });
+
+      const registeredName = newRestroomName.trim();
+      setIsAddRestroomModalOpen(false);
+      setNewRestroomName('');
+      setNewRestroomDeviceId('');
+      showToast(`신규 화장실 [${registeredName}]이 데이터베이스(MySQL)에 저장되었습니다.`);
+
+      // 2. 백엔드 DB로부터 최신 목록 즉시 새로고침
+      await handleManualRefresh();
+    } catch (err) {
+      console.error('화장실 DB 등록 오류:', err);
+      showToast(`등록 실패: ${err.message}`);
+    } finally {
+      setDataLoading(false);
     }
-
-    const newR = {
-      id: Date.now(),
-      name: newRestroomName,
-      floor: newRestroomFloor,
-      gender: newRestroomGender,
-      deviceId: newRestroomDeviceId,
-      macAddress: newRestroomDeviceId,
-      temp: 23.0,
-      humidity: 50.0,
-      gas: 250,
-      status: 'NORMAL',
-      isActive: true,
-      lastUpdated: '방금',
-      lastCleanedHours: 0,
-      cleanWorker: '담당자 미지정',
-      lat: 37.5665,
-      lng: 126.9780
-    };
-
-    setRestrooms(prev => [...prev, newR]);
-    setIsAddRestroomModalOpen(false);
-    setNewRestroomName('');
-    setNewRestroomDeviceId('');
-    showToast(`신규 화장실 [${newR.name}]이 성공적으로 등록되었습니다.`);
   };
 
   // 화장실 활성/비활성화 토글
@@ -1181,15 +1244,31 @@ export default function AdminPage() {
   };
 
   // 화장실 시설 삭제 핸들러 (개발자 전용)
-  const handleDeleteRestroom = (id) => {
+  const handleDeleteRestroom = async (id) => {
     const target = rawRestrooms.find(r => r.id === id);
     if (!target) return;
     if (rawRestrooms.length <= 1) {
       showToast('최소 1개 이상의 관제 구역이 유지되어야 합니다.');
       return;
     }
-    setRestrooms(prev => prev.filter(r => r.id !== id));
-    showToast(`[${target.name}] 시설이 목록에서 삭제되었습니다.`);
+    if (!window.confirm(`[${target.name}] 시설을 데이터베이스에서 완전히 삭제하시겠습니까?`)) {
+      return;
+    }
+
+    try {
+      setDataLoading(true);
+      // 1. 백엔드 MySQL DB에서 삭제 요청
+      await deleteBackendZone(id);
+      setRestrooms(prev => prev.filter(r => r.id !== id));
+      showToast(`[${target.name}] 시설이 데이터베이스에서 삭제되었습니다.`);
+      // 2. 백엔드 목록 즉시 동기화
+      await handleManualRefresh();
+    } catch (err) {
+      console.error('시설 삭제 오류:', err);
+      showToast(`삭제 실패: ${err.message}`);
+    } finally {
+      setDataLoading(false);
+    }
   };
 
   const handleCheckAlert = (id, e) => {

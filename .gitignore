@@ -42,6 +42,7 @@ backend/out/
 backend/bin/
 backend/scripts/__pycache__/
 backend/src/main/generated/
+backend/src/main/resources/static/
 
 # Log files
 *.log

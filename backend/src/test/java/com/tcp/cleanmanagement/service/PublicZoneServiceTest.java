@@ -64,6 +64,9 @@ class PublicZoneServiceTest {
         when(zoneRepository.findAll()).thenReturn(List.of(Zone.builder()
                 .id(1L).zoneType(ZoneType.TOILET).pleasantThreshold(50.0f).build()));
         when(rawRepository.findFirstByMetricSensorZoneIdAndMetricSensorSensorModelOrderByMeasuredAtDescIdDesc(
+                1L, com.tcp.cleanmanagement.enums.SensorModel.MQ135))
+                .thenReturn(Optional.empty());
+        when(rawRepository.findFirstByMetricSensorZoneIdAndMetricSensorSensorModelOrderByMeasuredAtDescIdDesc(
                 1L, com.tcp.cleanmanagement.enums.SensorModel.MQ7))
                 .thenReturn(Optional.of(SensorDataRaw.builder().measuredValue(new BigDecimal("123.4")).build()));
         stubReading(MetricCode.GAS, "15.0");

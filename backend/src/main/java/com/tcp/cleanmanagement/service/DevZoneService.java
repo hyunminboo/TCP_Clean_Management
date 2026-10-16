@@ -46,4 +46,11 @@ public class DevZoneService {
 
         return sensorRepository.save(sensor).getId();
     }
+
+    @Transactional
+    public void deleteZone(Long id) {
+        Zone zone = zoneRepository.findById(id)
+                .orElseThrow(() -> new IllegalArgumentException("Invalid Zone ID: " + id));
+        zoneRepository.delete(zone);
+    }
 }

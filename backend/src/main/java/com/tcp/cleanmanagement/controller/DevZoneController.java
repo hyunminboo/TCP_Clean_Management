@@ -22,4 +22,10 @@ public class DevZoneController {
     public ResponseEntity<Long> createSensor(@RequestBody SensorCreateRequest request) {
         return ResponseEntity.ok(devZoneService.createSensor(request));
     }
+
+    @DeleteMapping("/zones/{id}")
+    public ResponseEntity<Void> deleteZone(@PathVariable Long id) {
+        devZoneService.deleteZone(id);
+        return ResponseEntity.noContent().build();
+    }
 }
