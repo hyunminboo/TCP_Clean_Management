@@ -1,3 +1,5 @@
+import { parseUtcDate } from './backendApi';
+
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 async function getJson(path, signal) {
@@ -43,7 +45,7 @@ export function snapshotToRestroom(device, index = 0) {
     source: device.source,
     ingestSource: device.ingestSource,
     measuredAt: device.measuredAt,
-    lastUpdated: device.measuredAt ? new Date(device.measuredAt).toLocaleTimeString('ko-KR') : '측정 없음',
+    lastUpdated: device.measuredAt ? parseUtcDate(device.measuredAt).toLocaleTimeString('ko-KR') : '측정 없음',
     lastCleanedHours: 1.5,
     cleanWorker: '이순신',
     lat: device.latitude ?? 37.5668,
