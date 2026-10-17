@@ -1,5 +1,6 @@
 package com.tcp.cleanmanagement.controller;
 
+import com.tcp.cleanmanagement.dto.DeviceLocationUpdateRequest;
 import com.tcp.cleanmanagement.dto.DeviceSetResponse;
 import com.tcp.cleanmanagement.dto.SensorDataRequest;
 import com.tcp.cleanmanagement.service.IotDataService;
@@ -17,8 +18,20 @@ public class IotController {
 
     // 1. ESP32 기기 자동 설정 및 센서 ID 조회 (슬래시 2개 // 오타 완벽 방어)
     @GetMapping({"/device-sets/by-mac/{mac}", "//device-sets/by-mac/{mac}"})
-    public ResponseEntity<DeviceSetResponse> getDeviceSetByMac(@PathVariable String mac) {
-        return ResponseEntity.ok(iotDataService.getDeviceSetByMac(mac));
+    public ResponseEntity<DeviceSetResponse> getDeviceSetByMac(
+            @PathVariable String mac,
+            jakarta.servlet.http.HttpServletRequest httpRequest) {
+        String clientIp = extractClientIp(httpRequest);
+        return ResponseEntity.ok(iotDataService.getDeviceSetByMac(mac, clientIp));
+    }
+
+    private String extractClientIp(jakarta.servlet.http.HttpServletRequest request) {
+        if (request == null) return null;
+        String xForwardedFor = request.getHeader("X-Forwarded-For");
+        if (xForwardedFor != null && !xForwardedFor.isBlank()) {
+            return xForwardedFor.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
     }
 
     // 2. 센서별 측정값 수신 API (기존, 단축 경로 및 슬래시 2개 방어 공용)
@@ -26,5 +39,14 @@ public class IotController {
     public ResponseEntity<Void> receiveSensorData(@PathVariable Long sensorId, @Valid @RequestBody SensorDataRequest request) {
         iotDataService.saveSensorData(sensorId, request);
         return ResponseEntity.status(HttpStatus.CREATED).build();
+    }
+
+    // 3. 기기 설치 위치(GPS) 업데이트 API (단축 및 이중 슬래시 방어 공용)
+    @PostMapping({"/device-sets/by-mac/{mac}/location", "//device-sets/by-mac/{mac}/location"})
+    public ResponseEntity<Void> updateLocation(
+            @PathVariable String mac,
+            @Valid @RequestBody DeviceLocationUpdateRequest request) {
+        iotDataService.updateLocationByMac(mac, request.getLatitude(), request.getLongitude());
+        return ResponseEntity.ok().build();
     }
 }

@@ -36,6 +36,7 @@ public class DeviceSetService {
     private final DeviceSetHistoryRepository historyRepository;
     private final SensorDataRawRepository rawRepository;
     private final AlertRepository alertRepository;
+    private final DiscoveredDeviceService discoveredDeviceService;
 
     @Transactional
     public DeviceSetResponse register(DeviceSetRequest request) {
@@ -103,6 +104,7 @@ public class DeviceSetService {
         }
         sensorRepository.flush();
         initializeHistory(set);
+        discoveredDeviceService.removeDevice(mac);
         return responseFor(set);
     }
 
@@ -149,6 +151,7 @@ public class DeviceSetService {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "MAC address is already registered", error);
         }
         appendHistory(set);
+        discoveredDeviceService.removeDevice(mac);
         return responseFor(set);
     }
 

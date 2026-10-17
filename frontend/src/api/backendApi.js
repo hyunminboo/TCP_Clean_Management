@@ -690,5 +690,33 @@ export const deleteUserApi = async (userId) => {
   return true;
 };
 
+/**
+ * 감지된 미등록 기기 목록 조회 (관리자 전용)
+ */
+export const fetchDiscoveredDevicesApi = async () => {
+  try {
+    const response = await fetch(`${BASE_URL}/api/admin/discovered-devices`, {
+      headers: getAuthHeaders()
+    });
+    if (!response.ok) return [];
+    return response.json();
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * 감지된 미등록 기기 항목 무시/삭제 (관리자 전용)
+ */
+export const dismissDiscoveredDeviceApi = async (mac) => {
+  const response = await fetch(`${BASE_URL}/api/admin/discovered-devices/${encodeURIComponent(mac)}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders()
+  });
+  if (!response.ok) throw new Error(`기기 항목 삭제 실패 (${response.status})`);
+  return true;
+};
+
+
 
 

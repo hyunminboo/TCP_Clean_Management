@@ -3,6 +3,7 @@ package com.tcp.cleanmanagement.service;
 import com.tcp.cleanmanagement.dto.DeviceSetResponse;
 import com.tcp.cleanmanagement.dto.SensorDataRequest;
 import com.tcp.cleanmanagement.entity.DeviceSet;
+import com.tcp.cleanmanagement.entity.Zone;
 import com.tcp.cleanmanagement.entity.Sensor;
 import com.tcp.cleanmanagement.entity.SensorDataRaw;
 import com.tcp.cleanmanagement.entity.SensorMetric;
@@ -48,14 +49,21 @@ public class IotDataService {
     private final UpstashDeviceRepository upstashDeviceRepository;
     private final DeviceSetHistoryRepository historyRepository;
     private final DeviceSetRepository deviceSetRepository;
+    private final DiscoveredDeviceService discoveredDeviceService;
 
     @Transactional(readOnly = true)
     public DeviceSetResponse getDeviceSetByMac(String mac) {
+        return getDeviceSetByMac(mac, null);
+    }
+
+    @Transactional(readOnly = true)
+    public DeviceSetResponse getDeviceSetByMac(String mac, String clientIp) {
         String normalizedMac = (mac != null && mac.matches("[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}"))
                 ? mac.toUpperCase(Locale.ROOT) : (mac != null ? mac.trim() : "");
         if (!normalizedMac.isEmpty() && deviceSetRepository != null) {
             Optional<DeviceSet> registeredSet = deviceSetRepository.findByMacAddress(normalizedMac);
             if (registeredSet.isPresent()) {
+                discoveredDeviceService.removeDevice(normalizedMac);
                 DeviceSet set = registeredSet.get();
                 Map<String, Long> ids = new HashMap<>();
                 int gasCount = 0;
@@ -90,6 +98,7 @@ public class IotDataService {
 
             var registered = upstashDeviceRepository.findById(normalizedMac);
             if (registered.isPresent()) {
+                discoveredDeviceService.removeDevice(normalizedMac);
                 var device = registered.get();
                 Map<String, Long> ids = new HashMap<>();
                 ids.put("DHT11", device.getTemperatureHumiditySensor().getId());
@@ -99,29 +108,13 @@ public class IotDataService {
                         .setCode("ESP32_" + device.getMacAddress().replace(":", ""))
                         .sensorIds(ids).build();
             }
-        }
-        // The upstream demo uses one shared device set; resolve IDs by type so
-        // databases migrated from the metric-based schema remain compatible.
-        List<Sensor> sensors = sensorRepository.findAll().stream()
-                .filter(sensor -> sensor.getStatus() == SensorStatus.ACTIVE)
-                .sorted(Comparator.comparing(Sensor::getId))
-                .toList();
-        Map<String, Long> sensorMap = new HashMap<>();
-        sensors.stream().filter(sensor -> sensor.getSensorType() == SensorType.TEMP_HUMID)
-                .findFirst().ifPresent(sensor -> {
-                    sensorMap.put("DHT11", sensor.getId());
-                    sensorMap.put("DHT22", sensor.getId());
-                });
-        List<Sensor> gasSensors = sensors.stream()
-                .filter(sensor -> sensor.getSensorType() == SensorType.GAS).limit(2).toList();
-        if (!gasSensors.isEmpty()) sensorMap.put("MQ135", gasSensors.get(0).getId());
-        if (gasSensors.size() > 1) sensorMap.put("MQ7", gasSensors.get(1).getId());
 
-        return DeviceSetResponse.builder()
-                .macAddress(mac)
-                .setCode("ESP32_SET_01")
-                .sensorIds(sensorMap)
-                .build();
+            // 미등록 기기: 감지 목록에 기록하고 404를 반환하여 데이터 오염 방지
+            discoveredDeviceService.recordDiscovery(normalizedMac, clientIp);
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Unregistered ESP32 device: " + normalizedMac);
+        }
+
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "MAC address is required");
     }
 
     @Transactional
@@ -214,5 +207,26 @@ public class IotDataService {
             case HUMIDITY -> "PERCENT";
             case CONTACT -> "BINARY";
         };
+    }
+
+    @Transactional
+    public void updateLocationByMac(String mac, Double latitude, Double longitude) {
+        String normalizedMac = (mac != null && mac.matches("[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}"))
+                ? mac.toUpperCase(Locale.ROOT) : (mac != null ? mac.trim() : "");
+        if (normalizedMac.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid MAC address");
+        }
+        Optional<DeviceSet> deviceSetOpt = deviceSetRepository.findByMacAddress(normalizedMac);
+        if (deviceSetOpt.isEmpty()) {
+            discoveredDeviceService.recordLocation(normalizedMac, latitude, longitude);
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Device set not found for MAC: " + normalizedMac);
+        }
+
+        DeviceSet deviceSet = deviceSetOpt.get();
+        Zone zone = deviceSet.getZone();
+        if (zone != null) {
+            zone.setLatitude(latitude);
+            zone.setLongitude(longitude);
+        }
     }
 }

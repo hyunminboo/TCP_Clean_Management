@@ -44,7 +44,9 @@ import {
   fetchUpstashStatusApi,
   getKstDateString,
   loadStoredCleaningLogs,
-  persistCleaningLog
+  persistCleaningLog,
+  fetchDiscoveredDevicesApi,
+  dismissDiscoveredDeviceApi
 } from '../api/backendApi';
 import {
   Chart as ChartJS,
@@ -652,6 +654,9 @@ export default function AdminPage() {
   const [newRestroomWorkerId, setNewRestroomWorkerId] = useState('');
   const [isGpsLocating, setIsGpsLocating] = useState(false);
   const [gpsStatusMsg, setGpsStatusMsg] = useState('');
+
+  // 관리자 전용 미등록 IoT 기기 감지 대기 목록
+  const [discoveredDevices, setDiscoveredDevices] = useState([]);
 
   // 웹 지도 핀 찍기 및 주소 검색 위치 선택기 상태 (Location Picker)
   const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
@@ -1304,7 +1309,44 @@ export default function AdminPage() {
     fetchDeviceSetsApi().then(setDeviceSets).catch(console.warn);
     fetchSensorsApi().then(setSensorsList).catch(console.warn);
     fetchUsersApi().then(setUsersList).catch(console.warn);
+    loadDiscoveredDevices();
+    const discoveryTimer = setInterval(loadDiscoveredDevices, 5000);
+    return () => clearInterval(discoveryTimer);
   }, []);
+
+  // 관리자 전용 감지된 미등록 기기 목록 갱신
+  const loadDiscoveredDevices = async () => {
+    try {
+      const list = await fetchDiscoveredDevicesApi();
+      if (Array.isArray(list)) {
+        setDiscoveredDevices(list);
+      }
+    } catch (e) {
+      console.warn('[AdminPage] 미등록 기기 목록 조회 실패:', e);
+    }
+  };
+
+  // 감지된 미등록 기기로 신규 화장실 즉시 등록 (MAC 및 수신된 GPS 좌표 자동 입력)
+  const handleRegisterDiscoveredDevice = (dev) => {
+    setNewRestroomDeviceId(dev.macAddress);
+    if (dev.latitude != null && dev.longitude != null) {
+      setNewRestroomLat(String(dev.latitude));
+      setNewRestroomLng(String(dev.longitude));
+    }
+    setIsAddRestroomModalOpen(true);
+    showToast(`기기 MAC [${dev.macAddress}]이(가) 자동 입력되었습니다. 화장실 시설 정보를 입력해 주세요.`);
+  };
+
+  // 감지된 미등록 기기 항목 목록에서 제거/무시
+  const handleDismissDiscoveredDevice = async (mac) => {
+    try {
+      await dismissDiscoveredDeviceApi(mac);
+      setDiscoveredDevices(prev => prev.filter(d => d.macAddress !== mac));
+      showToast(`미등록 기기 [${mac}] 항목을 대기 목록에서 제외했습니다.`);
+    } catch (e) {
+      alert('기기 항목 제외 실패: ' + e.message);
+    }
+  };
 
   // 화장실 선택 시 해당 구역의 당일(KST) 위생 체크리스트 로드 및 빈 구역 초기화 (F09, F17)
   useEffect(() => {
@@ -1335,6 +1377,7 @@ export default function AdminPage() {
       } else if (settingsSubTab === 'restrooms') {
         fetchSensorsApi().then(setSensorsList).catch(console.warn);
         fetchDeviceSetsApi().then(setDeviceSets).catch(console.warn);
+        loadDiscoveredDevices();
       }
     }
   }, [activeTab, settingsSubTab]);
@@ -1968,6 +2011,7 @@ export default function AdminPage() {
       const sets = await fetchDeviceSetsApi().catch(() => null);
       if (sets) setDeviceSets(sets);
       await handleManualRefresh();
+      await loadDiscoveredDevices();
     } catch (err) {
       console.error('화장실 DB 등록 오류:', err);
       showToast(`등록 실패: ${err.message}`);
@@ -3635,12 +3679,50 @@ export default function AdminPage() {
                 style={{ ...styles.navItem, ...(activeTab === 'settings' ? styles.navItemActive : {}) }}
               >
                 <IconSettings /> 설정
+                {user?.role !== ROLES.CLEANER && discoveredDevices && discoveredDevices.length > 0 && (
+                  <span style={{
+                    marginLeft: '6px',
+                    padding: '1px 6px',
+                    fontSize: '10px',
+                    fontWeight: '700',
+                    borderRadius: '10px',
+                    backgroundColor: '#f59e0b',
+                    color: '#ffffff'
+                  }}>
+                    {discoveredDevices.length}
+                  </span>
+                )}
               </button>
             )}
           </nav>
         </div>
 
         <div style={styles.headerRight}>
+          {user?.role !== ROLES.CLEANER && discoveredDevices && discoveredDevices.length > 0 && (
+            <button
+              onClick={() => {
+                setActiveTab('settings');
+                setSettingsSubTab('restrooms');
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '4px 10px',
+                backgroundColor: '#fef3c7',
+                color: '#92400e',
+                border: '1px solid #fcd34d',
+                borderRadius: '16px',
+                fontSize: '11px',
+                fontWeight: '700',
+                cursor: 'pointer'
+              }}
+              title="미등록 IoT 기기가 감지되었습니다. 클릭하여 등록하기"
+            >
+              <span>📡 새 기기 {discoveredDevices.length}대 감지</span>
+            </button>
+          )}
+
           <button
             onClick={handleManualRefresh}
             style={{ ...styles.logoutBtn, padding: '4px 8px', fontSize: '11px' }}
@@ -4421,6 +4503,132 @@ export default function AdminPage() {
                     </button>
                   </div>
                 </div>
+
+                {/* 미등록 IoT 기기 자동 감지 대기함 (관리자 전용) */}
+                {discoveredDevices && discoveredDevices.length > 0 ? (
+                  <div style={{
+                    marginBottom: '18px',
+                    padding: '14px 16px',
+                    backgroundColor: '#fffbeb',
+                    borderRadius: '8px',
+                    border: '1px solid #fde68a',
+                    boxShadow: '0 1px 2px rgba(0,0,0,0.03)'
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span style={{ fontSize: '15px' }}>📡</span>
+                        <h4 style={{ margin: 0, fontSize: '13px', fontWeight: '700', color: '#92400e' }}>
+                          신규 감지된 미등록 기기 ({discoveredDevices.length}대 대기 중)
+                        </h4>
+                        <span style={{ fontSize: '11px', color: '#b45309' }}>
+                          전원이 켜져 서버에 접속을 시도한 기기입니다. 클릭 시 원하는 화장실에 즉시 등록됩니다.
+                        </span>
+                      </div>
+                      <button
+                        onClick={loadDiscoveredDevices}
+                        style={{ ...styles.secondaryBtn, padding: '3px 8px', fontSize: '11px', height: '24px' }}
+                      >
+                        새로고침
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {discoveredDevices.map(dev => (
+                        <div
+                          key={dev.macAddress}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '10px 14px',
+                            backgroundColor: '#ffffff',
+                            borderRadius: '6px',
+                            border: '1px solid #fef3c7',
+                            flexWrap: 'wrap',
+                            gap: '8px'
+                          }}
+                        >
+                          <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <div>
+                              <span style={{ fontSize: '11px', fontWeight: '600', color: '#64748b' }}>MAC: </span>
+                              <strong style={{ fontFamily: 'monospace', fontSize: '13px', color: '#0f172a' }}>{dev.macAddress}</strong>
+                            </div>
+                            {dev.ipAddress && (
+                              <div style={{ fontSize: '12px', color: '#64748b' }}>
+                                IP: <span style={{ fontFamily: 'monospace' }}>{dev.ipAddress}</span>
+                              </div>
+                            )}
+                            <div style={{ fontSize: '12px', color: '#64748b' }}>
+                              최근 신호: <span style={{ color: '#0f172a', fontWeight: '500' }}>{dev.lastSeenAt ? new Date(dev.lastSeenAt).toLocaleTimeString('ko-KR') : '방금'}</span>
+                              {dev.requestCount > 1 && ` (${dev.requestCount}회)`}
+                            </div>
+                            {dev.latitude != null && dev.longitude != null && (
+                              <div style={{ fontSize: '11px', color: '#0284c7', backgroundColor: '#e0f2fe', padding: '2px 6px', borderRadius: '4px' }}>
+                                📍 GPS: {dev.latitude.toFixed(4)}, {dev.longitude.toFixed(4)}
+                              </div>
+                            )}
+                          </div>
+
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              onClick={() => handleRegisterDiscoveredDevice(dev)}
+                              style={{
+                                padding: '6px 12px',
+                                backgroundColor: '#2563eb',
+                                color: '#ffffff',
+                                border: 'none',
+                                borderRadius: '4px',
+                                fontSize: '12px',
+                                fontWeight: '600',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              + 이 기기로 신규 화장실 등록
+                            </button>
+                            <button
+                              onClick={() => handleDismissDiscoveredDevice(dev.macAddress)}
+                              style={{
+                                padding: '6px 10px',
+                                backgroundColor: '#f1f5f9',
+                                color: '#64748b',
+                                border: '1px solid #cbd5e1',
+                                borderRadius: '4px',
+                                fontSize: '12px',
+                                cursor: 'pointer'
+                              }}
+                            >
+                              무시
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{
+                    marginBottom: '16px',
+                    padding: '10px 14px',
+                    backgroundColor: '#f8fafc',
+                    borderRadius: '6px',
+                    border: '1px solid #e2e8f0',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    fontSize: '12px',
+                    color: '#64748b'
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ color: '#16a34a', fontWeight: '700' }}>✔</span>
+                      <span>모든 IoT 기기가 정상 등록되어 운영 중입니다. 새로운 ESP32의 전원을 켜면 여기에 자동으로 감지됩니다.</span>
+                    </div>
+                    <button
+                      onClick={loadDiscoveredDevices}
+                      style={{ ...styles.secondaryBtn, padding: '2px 8px', fontSize: '11px', height: '22px' }}
+                    >
+                      실시간 감지 확인
+                    </button>
+                  </div>
+                )}
 
                 <div style={{ overflowX: 'auto', WebkitOverflowScrolling: 'touch' }}>
                   <table style={{ ...styles.table, minWidth: '680px' }}>

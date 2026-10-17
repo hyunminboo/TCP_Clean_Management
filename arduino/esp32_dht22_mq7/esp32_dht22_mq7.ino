@@ -44,6 +44,11 @@ String serverPort = "443";
 String supabaseUrl = "";
 String supabaseKey = "";
 
+// [설치 위치] 스마트폰 GPS 좌표 (설정 포털에서 1회 입력받아 영구 저장 및 서버 1회 전송)
+String gpsLat = "";
+String gpsLng = "";
+bool gpsSent = true;
+
 unsigned long TEMP_HUMID_SENSOR_ID = 0;
 unsigned long MQ135_SENSOR_ID = 0;
 unsigned long MQ7_SENSOR_ID = 0;
@@ -258,6 +263,29 @@ bool postReading(unsigned long sensorId, const String &payload) {
   return status == 201;
 }
 
+// 기기 설치 위치 (스마트폰 GPS 좌표) 백엔드 서버 1회 등록 함수
+bool sendDeviceLocationToServer() {
+  if (gpsSent || gpsLat.length() == 0 || gpsLng.length() == 0) return true;
+  if (WiFi.status() != WL_CONNECTED || getServerUrl().length() == 0) return false;
+
+  const String url = getServerUrl() + "/api/iot/device-sets/by-mac/" + deviceMac + "/location";
+  const String payload = "{\"latitude\":" + gpsLat + ",\"longitude\":" + gpsLng + "}";
+  Serial.printf("[GPS] 기기 위치 서버 1회 전송 시도 -> %s (%s)\n", url.c_str(), payload.c_str());
+
+  String resp;
+  int status = sendHttpRequest("POST", url, payload, resp);
+  if (status == 200 || status == 201) {
+    Serial.printf("[GPS] 위치 서버 등록 완료! (MAC: %s, lat: %s, lng: %s)\n",
+                  deviceMac.c_str(), gpsLat.c_str(), gpsLng.c_str());
+    gpsSent = true;
+    preferences.putBool("gpsSent", true); // 전송 완료 마킹 -> 이후 재부팅되어도 다시 안 보냄
+    return true;
+  } else {
+    Serial.printf("[GPS] 위치 전송 응답: %d, %s (다음 루프에서 재시도)\n", status, resp.c_str());
+    return false;
+  }
+}
+
 // =============================================================================
 // [5. WiFiManager 포털 관리 (라디오 버튼 듀얼 모드 지원)]
 // =============================================================================
@@ -308,6 +336,54 @@ void setupConfigPortal(bool forcePortal) {
   WiFiManagerParameter custom_supa_key("supa_key", "Supabase Publishable Key", supabaseKey.c_str(), 90);
   WiFiManagerParameter custom_supa_end("</div>");
 
+  // 3) 설치 위치 GPS 설정 UI (스마트폰 GPS 자동 수신 버튼 및 수동 입력 지원)
+  String gpsHtml =
+    "<hr style='margin:14px 0;'/>"
+    "<div style='background:#f0f9ff;padding:12px;border-radius:8px;margin-bottom:12px;border:1px solid #bae6fd;'>"
+    "<label style='font-weight:bold;color:#0369a1;font-size:15px;'>[3. 기기 설치 위치 (스마트폰 GPS 연동)]</label><br/>"
+    "<div style='margin-top:8px;'>"
+    "<button type='button' id='btn_gps' onclick='fetchPhoneGps()' "
+    "style='background:#0284c7;color:#fff;padding:10px 12px;border:none;border-radius:6px;cursor:pointer;font-weight:bold;width:100%;font-size:14px;'>"
+    "📍 스마트폰 현재 GPS 좌표 가져오기</button>"
+    "<div id='gps_msg' style='margin-top:6px;font-size:12px;color:#475569;'>버튼을 누르면 스마트폰의 위도/경도가 자동 입력됩니다.</div>"
+    "</div></div>"
+    "<script>"
+    "function fetchPhoneGps() {"
+    "  var msg = document.getElementById('gps_msg');"
+    "  if (!navigator.geolocation) {"
+    "    if (msg) msg.innerHTML = '<span style=\"color:#dc2626;\">⚠️ 브라우저가 위치 기능을 지원하지 않거나 보안상 차단되었습니다. 직접 입력해주세요.</span>';"
+    "    alert('브라우저가 위치 기능을 지원하지 않거나 차단되었습니다. 아래에 직접 입력해주세요.');"
+    "    return;"
+    "  }"
+    "  if (msg) msg.innerHTML = '⏳ 위치(GPS) 신호 수신 중... 잠시만 기다려주세요.';"
+    "  navigator.geolocation.getCurrentPosition("
+    "    function(pos) {"
+    "      var lat = pos.coords.latitude.toFixed(6);"
+    "      var lng = pos.coords.longitude.toFixed(6);"
+    "      var elLat = document.getElementById('gps_lat');"
+    "      var elLng = document.getElementById('gps_lng');"
+    "      if (elLat) elLat.value = lat;"
+    "      if (elLng) elLng.value = lng;"
+    "      if (msg) msg.innerHTML = '<span style=\"color:#16a34a;font-weight:bold;\">✅ 위치 수신 완료 (위도: ' + lat + ', 경도: ' + lng + ')</span>';"
+    "      alert('GPS 좌표 수신 성공!\\n위도: ' + lat + '\\n경도: ' + lng);"
+    "    },"
+    "    function(err) {"
+    "      var errTxt = '위치 수신 실패 (코드: ' + err.code + ')';"
+    "      if (err.code === 1) errTxt = '브라우저 권한 거부 또는 HTTP 보안 제한(HTTPS 필요)으로 차단되었습니다.';"
+    "      else if (err.code === 2) errTxt = '위치 신호를 잡을 수 없습니다.';"
+    "      else if (err.code === 3) errTxt = '위치 수신 시간 초과';"
+    "      if (msg) msg.innerHTML = '<span style=\"color:#dc2626;\">⚠️ ' + errTxt + '<br/>아래 입력란에 직접 입력해주세요.</span>';"
+    "      alert('GPS 수신 불가: ' + errTxt + '\\n아래 입력란에 위도/경도를 직접 입력해주세요.');"
+    "    },"
+    "    { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }"
+    "  );"
+    "}"
+    "</script>";
+
+  WiFiManagerParameter custom_gps_html(gpsHtml.c_str());
+  WiFiManagerParameter custom_gps_lat("gps_lat", "설치 위도 (Latitude, 예: 37.5665)", gpsLat.c_str(), 20);
+  WiFiManagerParameter custom_gps_lng("gps_lng", "설치 경도 (Longitude, 예: 126.9780)", gpsLng.c_str(), 20);
+
   wm.addParameter(&custom_mode_html);
   wm.addParameter(&custom_dest_mode);
   wm.addParameter(&custom_srv_start);
@@ -318,6 +394,9 @@ void setupConfigPortal(bool forcePortal) {
   wm.addParameter(&custom_supa_url);
   wm.addParameter(&custom_supa_key);
   wm.addParameter(&custom_supa_end);
+  wm.addParameter(&custom_gps_html);
+  wm.addParameter(&custom_gps_lat);
+  wm.addParameter(&custom_gps_lng);
 
   auto saveCallback = [&]() {
     String newMode = custom_dest_mode.getValue();
@@ -351,8 +430,26 @@ void setupConfigPortal(bool forcePortal) {
       preferences.putString("supaKey", supabaseKey);
     }
 
-    Serial.printf("[SETUP] 설정 저장: 모드=%s, 서버=%s:%s, 수파베이스=%s\n",
-                  destMode.c_str(), serverIp.c_str(), serverPort.c_str(), supabaseUrl.c_str());
+    String newLat = custom_gps_lat.getValue();
+    String newLng = custom_gps_lng.getValue();
+    newLat.trim();
+    newLng.trim();
+    if (newLat.length() > 0 && newLng.length() > 0) {
+      if (newLat != gpsLat || newLng != gpsLng || !preferences.isKey("gpsSent")) {
+        gpsLat = newLat;
+        gpsLng = newLng;
+        gpsSent = false; // 새로운 위치가 저장되었으므로 1회 전송 활성화
+        preferences.putString("gpsLat", gpsLat);
+        preferences.putString("gpsLng", gpsLng);
+        preferences.putBool("gpsSent", false);
+        Serial.printf("[SETUP] GPS 위치 등록: lat=%s, lng=%s (Wi-Fi 연결 시 1회 전송 예정)\n",
+                      gpsLat.c_str(), gpsLng.c_str());
+      }
+    }
+
+    Serial.printf("[SETUP] 설정 저장: 모드=%s, 서버=%s:%s, 수파베이스=%s, GPS=(%s,%s)\n",
+                  destMode.c_str(), serverIp.c_str(), serverPort.c_str(), supabaseUrl.c_str(),
+                  gpsLat.c_str(), gpsLng.c_str());
   };
   wm.setSaveConfigCallback(saveCallback);
 
@@ -461,6 +558,9 @@ void setup() {
   serverPort = preferences.getString("serverPort", serverPort);
   supabaseUrl = preferences.getString("supaUrl", "");
   supabaseKey = preferences.getString("supaKey", "");
+  gpsLat = preferences.getString("gpsLat", "");
+  gpsLng = preferences.getString("gpsLng", "");
+  gpsSent = preferences.getBool("gpsSent", true);
 
   Serial.printf("[CONFIG] 동작 모드: '%s'\n", destMode.c_str());
   if (destMode == "SUPABASE") {
@@ -468,6 +568,8 @@ void setup() {
   } else {
     Serial.printf("[CONFIG] 저장된 서버: '%s:%s' (URL: %s)\n", serverIp.c_str(), serverPort.c_str(), getServerUrl().c_str());
   }
+  Serial.printf("[CONFIG] 저장된 GPS 위치: lat='%s', lng='%s' (전송완료여부: %s)\n",
+                gpsLat.c_str(), gpsLng.c_str(), gpsSent ? "YES" : "NO(1회 전송 대기)");
 
   // 모드별 필수 설정 누락 시 또는 BOOT 버튼 누른 채 부팅 시 즉시 설정 포털 실행
   bool needsConfig = (digitalRead(FORCE_SETUP_PIN) == LOW);
@@ -497,6 +599,12 @@ void loop() {
       delay(2000);
       return;
     }
+  }
+
+  // 2-1. [1회 한정] 스마트폰 GPS 좌표가 설정되어 있고 아직 서버에 전송하지 않은 경우 전송
+  if (!gpsSent && gpsLat.length() > 0 && gpsLng.length() > 0) {
+    connectWifi();
+    sendDeviceLocationToServer();
   }
 
   // 3. 주기별 데이터 전송 (5초 간격)

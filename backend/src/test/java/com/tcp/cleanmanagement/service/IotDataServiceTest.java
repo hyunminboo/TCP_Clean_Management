@@ -46,23 +46,19 @@ class IotDataServiceTest {
     @Mock UpstashDeviceRepository upstashDeviceRepository;
     @Mock DeviceSetRepository deviceSetRepository;
     @Mock DeviceSetHistoryRepository historyRepository;
+    @Mock DiscoveredDeviceService discoveredDeviceService;
     @InjectMocks IotDataService service;
 
     @Test
-    void deviceConfigurationResolvesExistingActiveSensorTypesInsteadOfFixedIds() {
-        when(sensorRepository.findAll()).thenReturn(List.of(
-                Sensor.builder().id(50L).sensorType(SensorType.GAS).status(SensorStatus.ACTIVE).build(),
-                Sensor.builder().id(2L).sensorType(SensorType.TEMP_HUMID).status(SensorStatus.ERROR).build(),
-                Sensor.builder().id(21L).sensorType(SensorType.TEMP_HUMID).status(SensorStatus.ACTIVE).build(),
-                Sensor.builder().id(40L).sensorType(SensorType.GAS).status(SensorStatus.ACTIVE).build()));
+    void unregisteredDeviceThrowsNotFoundAndRecordsDiscovery() {
+        when(deviceSetRepository.findByMacAddress("AA:BB:CC:DD:EE:FF")).thenReturn(Optional.empty());
+        when(upstashDeviceRepository.findById("AA:BB:CC:DD:EE:FF")).thenReturn(Optional.empty());
 
-        var response = service.getDeviceSetByMac("AA:BB:CC:DD:EE:FF");
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class, () ->
+                service.getDeviceSetByMac("AA:BB:CC:DD:EE:FF", "192.168.1.50"));
 
-        assertEquals("AA:BB:CC:DD:EE:FF", response.getMacAddress());
-        assertEquals(21L, response.getSensorIds().get("DHT11"));
-        assertEquals(21L, response.getSensorIds().get("DHT22"));
-        assertEquals(40L, response.getSensorIds().get("MQ135"));
-        assertEquals(50L, response.getSensorIds().get("MQ7"));
+        assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
+        verify(discoveredDeviceService).recordDiscovery("AA:BB:CC:DD:EE:FF", "192.168.1.50");
     }
 
     @Test
