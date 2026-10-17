@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth, ROLES, ROLE_INFO } from '../auth/AuthContext';
-import { CustomOverlayMap } from 'react-kakao-maps-sdk';
+import { CustomOverlayMap, MapMarker } from 'react-kakao-maps-sdk';
 import Map from '../components/KakaoMapFrame';
+import { searchKakaoPlaces } from '../api/searchApi';
 import SensorDataStatus from '../components/SensorDataStatus';
 import { fetchSensorDevices, fetchSensorHistory, snapshotToRestroom, formatReading } from '../api/sensorApi';
 import {
@@ -644,6 +645,17 @@ export default function AdminPage() {
   const [newRestroomWorkerId, setNewRestroomWorkerId] = useState('');
   const [isGpsLocating, setIsGpsLocating] = useState(false);
   const [gpsStatusMsg, setGpsStatusMsg] = useState('');
+
+  // 웹 지도 핀 찍기 및 주소 검색 위치 선택기 상태 (Location Picker)
+  const [isLocationPickerOpen, setIsLocationPickerOpen] = useState(false);
+  const [locationPickerTarget, setLocationPickerTarget] = useState('restroom'); // 'restroom' | 'zone' | 'editZone'
+  const [pickerLat, setPickerLat] = useState(37.566826);
+  const [pickerLng, setPickerLng] = useState(126.978656);
+  const [pickerMapCenter, setPickerMapCenter] = useState({ lat: 37.566826, lng: 126.978656 });
+  const [pickerSearchKeyword, setPickerSearchKeyword] = useState('');
+  const [pickerSearchResults, setPickerSearchResults] = useState([]);
+  const [pickerAddress, setPickerAddress] = useState('');
+  const [isSearchingPlaces, setIsSearchingPlaces] = useState(false);
 
   // 대시보드 퀵 청소 모달 & 토스트
   const [isCleaningModalOpen, setIsCleaningModalOpen] = useState(false);
@@ -1773,6 +1785,138 @@ export default function AdminPage() {
     );
   };
 
+  // Kakao Geocoder 역지오코딩 (좌표 -> 주소 변환)
+  const reverseGeocode = (lat, lng) => {
+    if (!window.kakao || !window.kakao.maps || !window.kakao.maps.services) {
+      setPickerAddress('');
+      return;
+    }
+    try {
+      const geocoder = new window.kakao.maps.services.Geocoder();
+      geocoder.coord2Address(lng, lat, (result, status) => {
+        if (status === window.kakao.maps.services.Status.OK && result && result.length > 0) {
+          const road = result[0].road_address?.address_name;
+          const jibun = result[0].address?.address_name;
+          setPickerAddress(road || jibun || '');
+        } else {
+          setPickerAddress('');
+        }
+      });
+    } catch (err) {
+      console.warn('역지오코딩 처리 실패:', err);
+      setPickerAddress('');
+    }
+  };
+
+  // 웹 지도 핀 찍기 및 주소 검색 모달 열기 (옵션 ③ - HTTP 환경 완벽 지원)
+  const openLocationPicker = (target = 'restroom') => {
+    setLocationPickerTarget(target);
+    let initialLat = 37.566826;
+    let initialLng = 126.978656;
+
+    if (target === 'zone') {
+      const parsedLat = parseFloat(newZoneLat);
+      const parsedLng = parseFloat(newZoneLng);
+      if (!isNaN(parsedLat) && !isNaN(parsedLng) && parsedLat !== 0 && parsedLng !== 0) {
+        initialLat = parsedLat;
+        initialLng = parsedLng;
+      }
+    } else if (target === 'editZone') {
+      const parsedLat = parseFloat(editingZone?.lat || editingZone?.latitude);
+      const parsedLng = parseFloat(editingZone?.lng || editingZone?.longitude);
+      if (!isNaN(parsedLat) && !isNaN(parsedLng) && parsedLat !== 0 && parsedLng !== 0) {
+        initialLat = parsedLat;
+        initialLng = parsedLng;
+      }
+    } else {
+      // restroom
+      const parsedLat = parseFloat(newRestroomLat);
+      const parsedLng = parseFloat(newRestroomLng);
+      if (!isNaN(parsedLat) && !isNaN(parsedLng) && parsedLat !== 0 && parsedLng !== 0) {
+        initialLat = parsedLat;
+        initialLng = parsedLng;
+      }
+    }
+
+    setPickerLat(initialLat);
+    setPickerLng(initialLng);
+    setPickerMapCenter({ lat: initialLat, lng: initialLng });
+    setPickerSearchKeyword('');
+    setPickerSearchResults([]);
+    reverseGeocode(initialLat, initialLng);
+    setIsLocationPickerOpen(true);
+  };
+
+  // 카카오 키워드 장소 검색 실행
+  const handlePickerSearch = async (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    if (!pickerSearchKeyword.trim()) {
+      showToast('검색할 건물명, 역명 또는 도로명 주소를 입력해주세요.');
+      return;
+    }
+    try {
+      setIsSearchingPlaces(true);
+      const results = await searchKakaoPlaces(pickerSearchKeyword.trim(), pickerLat, pickerLng);
+      setPickerSearchResults(results || []);
+      if (results && results.length > 0) {
+        const first = results[0];
+        setPickerLat(first.lat);
+        setPickerLng(first.lon);
+        setPickerMapCenter({ lat: first.lat, lng: first.lon });
+        setPickerAddress(first.address || first.name);
+        showToast(`'${first.name}' 검색 위치로 이동했습니다.`);
+      } else {
+        showToast('검색 결과가 없습니다. 지도를 직접 클릭하여 위치를 선택해보세요.');
+      }
+    } catch (err) {
+      console.error('장소 검색 오류:', err);
+      showToast('장소 검색 중 오류가 발생했습니다.');
+    } finally {
+      setIsSearchingPlaces(false);
+    }
+  };
+
+  // 검색 결과 항목 선택 시 핀 및 지도 중심 이동
+  const handleSelectSearchResult = (item) => {
+    setPickerLat(item.lat);
+    setPickerLng(item.lon);
+    setPickerMapCenter({ lat: item.lat, lng: item.lon });
+    setPickerAddress(item.address || item.name);
+    showToast(`'${item.name}' 위치로 핀을 이동했습니다.`);
+  };
+
+  // 위치 선택 확정 및 해당 모달 입력 필드에 반영
+  const handleConfirmLocationPicker = () => {
+    const latStr = Number(pickerLat).toFixed(6);
+    const lngStr = Number(pickerLng).toFixed(6);
+
+    if (locationPickerTarget === 'zone') {
+      setNewZoneLat(latStr);
+      setNewZoneLng(lngStr);
+      if (pickerAddress) {
+        setNewZoneAddress(pickerAddress);
+      }
+    } else if (locationPickerTarget === 'editZone') {
+      setEditingZone(prev => prev ? {
+        ...prev,
+        latitude: latStr,
+        longitude: lngStr,
+        lat: latStr,
+        lng: lngStr,
+        address: pickerAddress || prev.address
+      } : prev);
+    } else {
+      // restroom
+      setNewRestroomLat(latStr);
+      setNewRestroomLng(lngStr);
+      setNewZoneLat(latStr);
+      setNewZoneLng(lngStr);
+    }
+
+    setIsLocationPickerOpen(false);
+    showToast(`선택된 위치(${latStr}, ${lngStr})로 좌표가 설정되었습니다.`);
+  };
+
   // 신규 화장실/노드 등록 핸들러 (SCR-06 FR-60)
   const handleAddRestroom = async () => {
     if (!newRestroomName.trim()) {
@@ -1909,6 +2053,8 @@ export default function AdminPage() {
       address: restroom.address || '서울특별시 중구 세종대로 110',
       latitude: String(restroom.lat ?? 37.566826),
       longitude: String(restroom.lng ?? 126.978656),
+      lat: String(restroom.lat ?? 37.566826),
+      lng: String(restroom.lng ?? 126.978656),
       zoneType: restroom.zoneType || 'TOILET',
       pleasantThreshold: restroom.pleasantThreshold ?? thresholds.gasWarn ?? 300,
       needsVentilationThreshold: restroom.needsVentilationThreshold ?? thresholds.gasDanger ?? 600,
@@ -1930,8 +2076,8 @@ export default function AdminPage() {
       await updateBackendZoneApi(editingZone.id, {
         name: editingZone.name.trim(),
         address: editingZone.address?.trim() || '서울특별시 중구 세종대로 110',
-        latitude: parseFloat(editingZone.latitude) || 37.566826,
-        longitude: parseFloat(editingZone.longitude) || 126.978656,
+        latitude: parseFloat(editingZone.lat || editingZone.latitude) || 37.566826,
+        longitude: parseFloat(editingZone.lng || editingZone.longitude) || 126.978656,
         zoneType: editingZone.zoneType || 'TOILET',
         pleasantThreshold: Number(editingZone.pleasantThreshold) || 300,
         needsVentilationThreshold: Number(editingZone.needsVentilationThreshold) || 600,
@@ -4915,38 +5061,66 @@ export default function AdminPage() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
                   <div>
                     <div style={{ fontSize: '12px', fontWeight: '600', color: '#0f172a' }}>
-                      설치 위치 GPS 좌표 (스마트폰 연동)
+                      설치 위치 좌표 설정 (지도 핀 / 주소 검색 / GPS)
                     </div>
                     <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
-                      센서 부착 위치에서 버튼을 누르면 스마트폰 GPS 좌표를 자동으로 읽어옵니다.
+                      지도 핀 찍기(HTTP 지원) 또는 스마트폰 GPS로 좌표를 자동 입력합니다.
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleSetCurrentGpsLocation('restroom')}
-                    disabled={isGpsLocating}
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '6px',
-                      padding: '7px 12px',
-                      backgroundColor: isGpsLocating ? '#94a3b8' : '#2563eb',
-                      color: '#ffffff',
-                      border: 'none',
-                      borderRadius: '6px',
-                      fontSize: '12px',
-                      fontWeight: '600',
-                      cursor: isGpsLocating ? 'wait' : 'pointer',
-                      whiteSpace: 'nowrap',
-                      boxShadow: '0 1px 2px rgba(37, 99, 235, 0.2)'
-                    }}
-                  >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="12" cy="12" r="3" />
-                      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
-                    </svg>
-                    {isGpsLocating ? 'GPS 수신 중...' : '현재 내 위치로 좌표 설정'}
-                  </button>
+                  <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      onClick={() => openLocationPicker('restroom')}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '7px 12px',
+                        backgroundColor: '#059669',
+                        color: '#ffffff',
+                        border: 'none',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        boxShadow: '0 1px 2px rgba(5, 150, 105, 0.25)'
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
+                        <line x1="8" y1="2" x2="8" y2="18" />
+                        <line x1="16" y1="6" x2="16" y2="22" />
+                      </svg>
+                      🗺️ 지도 핀 / 주소 검색
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetCurrentGpsLocation('restroom')}
+                      disabled={isGpsLocating}
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '7px 12px',
+                        backgroundColor: isGpsLocating ? '#94a3b8' : '#2563eb',
+                        color: '#ffffff',
+                        border: 'none',
+                        borderRadius: '6px',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: isGpsLocating ? 'wait' : 'pointer',
+                        whiteSpace: 'nowrap',
+                        boxShadow: '0 1px 2px rgba(37, 99, 235, 0.2)'
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="3" />
+                        <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+                      </svg>
+                      {isGpsLocating ? 'GPS 수신 중...' : '현재 GPS 위치'}
+                    </button>
+                  </div>
                 </div>
 
                 {gpsStatusMsg && (
@@ -5436,28 +5610,49 @@ export default function AdminPage() {
                   style={styles.formInput}
                 />
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                <span style={{ fontSize: '12px', fontWeight: '600', color: '#0f172a' }}>설치 GPS 좌표</span>
-                <button
-                  type="button"
-                  onClick={() => handleSetCurrentGpsLocation('zone')}
-                  disabled={isGpsLocating}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '5px',
-                    padding: '5px 10px',
-                    backgroundColor: isGpsLocating ? '#94a3b8' : '#2563eb',
-                    color: '#ffffff',
-                    border: 'none',
-                    borderRadius: '6px',
-                    fontSize: '11px',
-                    fontWeight: '600',
-                    cursor: isGpsLocating ? 'wait' : 'pointer'
-                  }}
-                >
-                  {isGpsLocating ? 'GPS 수신 중...' : '현재 내 위치로 좌표 설정'}
-                </button>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', flexWrap: 'wrap', gap: '6px' }}>
+                <span style={{ fontSize: '12px', fontWeight: '600', color: '#0f172a' }}>설치 좌표 설정</span>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    type="button"
+                    onClick={() => openLocationPicker('zone')}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '5px 10px',
+                      backgroundColor: '#059669',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: '600',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    🗺️ 지도 핀 / 주소 검색
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetCurrentGpsLocation('zone')}
+                    disabled={isGpsLocating}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '5px 10px',
+                      backgroundColor: isGpsLocating ? '#94a3b8' : '#2563eb',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: '600',
+                      cursor: isGpsLocating ? 'wait' : 'pointer'
+                    }}
+                  >
+                    {isGpsLocating ? 'GPS 수신 중...' : '현재 GPS 위치'}
+                  </button>
+                </div>
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                 <div style={styles.formGroup}>
@@ -5514,51 +5709,67 @@ export default function AdminPage() {
                   style={{ ...styles.formInput, height: '60px', resize: 'none' }}
                 />
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '4px' }}>
-                <label style={styles.formLabel}>설치 위치 좌표 (GPS)</label>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!navigator.geolocation) {
-                      alert('브라우저에서 GPS 위치 기능을 지원하지 않습니다.');
-                      return;
-                    }
-                    navigator.geolocation.getCurrentPosition(
-                      (pos) => {
-                        setEditingZone(prev => ({
-                          ...prev,
-                          lat: pos.coords.latitude.toFixed(6),
-                          lng: pos.coords.longitude.toFixed(6)
-                        }));
-                      },
-                      (err) => alert('위치 정보를 가져올 수 없습니다: ' + err.message),
-                      { enableHighAccuracy: true, timeout: 10000 }
-                    );
-                  }}
-                  style={{ ...styles.secondaryBtn, padding: '4px 8px', fontSize: '11px', color: '#4da6ff', borderColor: 'rgba(77,166,255,0.4)' }}
-                >
-                  📍 현재 내 위치로 좌표 설정
-                </button>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px', marginBottom: '6px', flexWrap: 'wrap', gap: '6px' }}>
+                <label style={styles.formLabel}>설치 위치 좌표 설정</label>
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    type="button"
+                    onClick={() => openLocationPicker('editZone')}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '5px 10px',
+                      backgroundColor: '#059669',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: '600',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    🗺️ 지도 핀 / 주소 검색
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSetCurrentGpsLocation('editZone')}
+                    disabled={isGpsLocating}
+                    style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      padding: '5px 10px',
+                      backgroundColor: isGpsLocating ? '#94a3b8' : '#2563eb',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: '600',
+                      cursor: isGpsLocating ? 'wait' : 'pointer'
+                    }}
+                  >
+                    {isGpsLocating ? 'GPS 수신 중...' : '현재 GPS 위치'}
+                  </button>
+                </div>
               </div>
               <div style={{ display: 'flex', gap: '8px' }}>
                 <div style={{ ...styles.formGroup, flex: 1 }}>
                   <label style={styles.formLabel}>위도 (Lat)</label>
                   <input
-                    type="number"
-                    step="0.0001"
-                    value={editingZone.lat}
-                    onChange={e => setEditingZone({ ...editingZone, lat: e.target.value })}
-                    style={styles.formInput}
+                    type="text"
+                    value={editingZone.lat ?? editingZone.latitude ?? ''}
+                    onChange={e => setEditingZone({ ...editingZone, lat: e.target.value, latitude: e.target.value })}
+                    style={{ ...styles.formInput, fontFamily: 'monospace' }}
                   />
                 </div>
                 <div style={{ ...styles.formGroup, flex: 1 }}>
                   <label style={styles.formLabel}>경도 (Lng)</label>
                   <input
-                    type="number"
-                    step="0.0001"
-                    value={editingZone.lng}
-                    onChange={e => setEditingZone({ ...editingZone, lng: e.target.value })}
-                    style={styles.formInput}
+                    type="text"
+                    value={editingZone.lng ?? editingZone.longitude ?? ''}
+                    onChange={e => setEditingZone({ ...editingZone, lng: e.target.value, longitude: e.target.value })}
+                    style={{ ...styles.formInput, fontFamily: 'monospace' }}
                   />
                 </div>
               </div>
@@ -5751,6 +5962,304 @@ export default function AdminPage() {
             </div>
             <div style={styles.modalFooter}>
               <button onClick={() => setIsWorkerModalOpen(false)} style={styles.primaryBtn}>닫기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 6. 웹 지도 핀 찍기 및 주소 검색 위치 선택기 모달 (옵션 ③ - HTTP 완벽 지원) */}
+      {isLocationPickerOpen && (
+        <div
+          style={{
+            ...styles.modalOverlay,
+            zIndex: 10000,
+            backgroundColor: 'rgba(15, 23, 42, 0.65)'
+          }}
+          onClick={() => setIsLocationPickerOpen(false)}
+        >
+          <div
+            style={{
+              ...styles.modalContent,
+              width: '92vw',
+              maxWidth: '820px',
+              height: '88vh',
+              maxHeight: '740px',
+              display: 'flex',
+              flexDirection: 'column',
+              padding: 0,
+              overflow: 'hidden',
+              borderRadius: '12px',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 8px 10px -6px rgba(0, 0, 0, 0.2)'
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            {/* 헤더 */}
+            <div
+              style={{
+                padding: '16px 20px',
+                borderBottom: '1px solid #e2e8f0',
+                backgroundColor: '#ffffff',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}
+            >
+              <div>
+                <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  🗺️ 지도 핀 찍기 &amp; 주소 검색
+                  <span style={{ fontSize: '11px', fontWeight: '600', backgroundColor: '#ecfdf5', color: '#059669', padding: '2px 8px', borderRadius: '12px', border: '1px solid #a7f3d0' }}>
+                    HTTP 환경 지원
+                  </span>
+                </h3>
+                <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
+                  건물명이나 도로명을 검색하거나, 지도의 설치 위치를 직접 클릭하여 핀을 지정하세요.
+                </div>
+              </div>
+              <button
+                onClick={() => setIsLocationPickerOpen(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '22px',
+                  color: '#94a3b8',
+                  cursor: 'pointer',
+                  padding: '4px 8px',
+                  lineHeight: 1
+                }}
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* 검색창 바 */}
+            <div
+              style={{
+                padding: '12px 20px',
+                backgroundColor: '#f8fafc',
+                borderBottom: '1px solid #e2e8f0'
+              }}
+            >
+              <form
+                onSubmit={handlePickerSearch}
+                style={{ display: 'flex', gap: '8px', alignItems: 'center' }}
+              >
+                <div style={{ position: 'relative', flex: 1 }}>
+                  <input
+                    type="text"
+                    value={pickerSearchKeyword}
+                    onChange={e => setPickerSearchKeyword(e.target.value)}
+                    placeholder="건물명, 시설명 또는 도로명 주소 검색 (예: 종로구청, 서울역 화장실)"
+                    style={{
+                      width: '100%',
+                      padding: '9px 12px 9px 36px',
+                      fontSize: '13px',
+                      borderRadius: '8px',
+                      border: '1px solid #cbd5e1',
+                      outline: 'none',
+                      backgroundColor: '#ffffff',
+                      boxSizing: 'border-box'
+                    }}
+                  />
+                  <span style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '14px', color: '#94a3b8' }}>
+                    🔍
+                  </span>
+                </div>
+                <button
+                  type="submit"
+                  disabled={isSearchingPlaces}
+                  style={{
+                    padding: '9px 18px',
+                    backgroundColor: isSearchingPlaces ? '#94a3b8' : '#2563eb',
+                    color: '#ffffff',
+                    border: 'none',
+                    borderRadius: '8px',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    cursor: isSearchingPlaces ? 'wait' : 'pointer',
+                    whiteSpace: 'nowrap'
+                  }}
+                >
+                  {isSearchingPlaces ? '검색 중...' : '검색'}
+                </button>
+              </form>
+
+              {/* 검색 결과 칩 리스트 */}
+              {pickerSearchResults.length > 0 && (
+                <div
+                  style={{
+                    marginTop: '10px',
+                    display: 'flex',
+                    gap: '6px',
+                    overflowX: 'auto',
+                    paddingBottom: '4px'
+                  }}
+                >
+                  {pickerSearchResults.slice(0, 6).map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleSelectSearchResult(item)}
+                      style={{
+                        padding: '5px 10px',
+                        backgroundColor: '#ffffff',
+                        border: '1px solid #cbd5e1',
+                        borderRadius: '16px',
+                        fontSize: '11px',
+                        color: '#334155',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        transition: 'all 0.15s ease'
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.borderColor = '#2563eb'; e.currentTarget.style.color = '#2563eb'; }}
+                      onMouseLeave={e => { e.currentTarget.style.borderColor = '#cbd5e1'; e.currentTarget.style.color = '#334155'; }}
+                    >
+                      <span>📍</span>
+                      <strong style={{ fontWeight: '600' }}>{item.name}</strong>
+                      <span style={{ color: '#94a3b8', fontSize: '10px' }}>({item.address || '주소 정보'})</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 지도 본문 */}
+            <div style={{ flex: 1, position: 'relative', minHeight: '280px' }}>
+              <Map
+                center={pickerMapCenter}
+                style={{ width: '100%', height: '100%' }}
+                level={3}
+                onClick={(_map, mouseEvent) => {
+                  if (!mouseEvent || !mouseEvent.latLng) return;
+                  const lat = mouseEvent.latLng.getLat();
+                  const lng = mouseEvent.latLng.getLng();
+                  setPickerLat(lat);
+                  setPickerLng(lng);
+                  reverseGeocode(lat, lng);
+                }}
+              >
+                <MapMarker
+                  position={{ lat: pickerLat, lng: pickerLng }}
+                  draggable={true}
+                  onDragEnd={(marker) => {
+                    const lat = marker.getPosition().getLat();
+                    const lng = marker.getPosition().getLng();
+                    setPickerLat(lat);
+                    setPickerLng(lng);
+                    reverseGeocode(lat, lng);
+                  }}
+                />
+                <CustomOverlayMap
+                  position={{ lat: pickerLat, lng: pickerLng }}
+                  yAnchor={2.3}
+                >
+                  <div
+                    style={{
+                      backgroundColor: '#1e293b',
+                      color: '#ffffff',
+                      padding: '5px 10px',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      fontWeight: '600',
+                      boxShadow: '0 4px 10px rgba(0,0,0,0.3)',
+                      whiteSpace: 'nowrap',
+                      pointerEvents: 'none',
+                      border: '1px solid #334155'
+                    }}
+                  >
+                    📍 선택된 센서 설치 위치
+                  </div>
+                </CustomOverlayMap>
+              </Map>
+
+              {/* 지도 안내 툴팁 */}
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '12px',
+                  left: '12px',
+                  zIndex: 2,
+                  backgroundColor: 'rgba(255, 255, 255, 0.95)',
+                  padding: '6px 12px',
+                  borderRadius: '6px',
+                  fontSize: '11px',
+                  fontWeight: '500',
+                  color: '#475569',
+                  boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
+                  backdropFilter: 'blur(4px)',
+                  border: '1px solid #e2e8f0',
+                  pointerEvents: 'none'
+                }}
+              >
+                💡 지도를 클릭하거나 핀을 드래그하여 정확한 설치 지점을 맞춰주세요.
+              </div>
+            </div>
+
+            {/* 하단 선택 정보 및 확정 바 */}
+            <div
+              style={{
+                padding: '14px 20px',
+                borderTop: '1px solid #e2e8f0',
+                backgroundColor: '#ffffff',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: '12px'
+              }}
+            >
+              <div style={{ flex: 1, minWidth: '240px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '11px', fontWeight: '700', color: '#64748b' }}>선택 좌표:</span>
+                  <span style={{ fontFamily: 'monospace', fontSize: '13px', fontWeight: '700', color: '#0f172a' }}>
+                    {Number(pickerLat).toFixed(6)}, {Number(pickerLng).toFixed(6)}
+                  </span>
+                </div>
+                <div style={{ fontSize: '12px', color: '#475569', marginTop: '2px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <span style={{ fontWeight: '600', color: '#64748b' }}>주소: </span>
+                  {pickerAddress || '지도를 클릭하여 주소를 확인하세요'}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setIsLocationPickerOpen(false)}
+                  style={{
+                    padding: '8px 16px',
+                    backgroundColor: '#ffffff',
+                    border: '1px solid #cbd5e1',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    fontWeight: '600',
+                    color: '#64748b',
+                    cursor: 'pointer'
+                  }}
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmLocationPicker}
+                  style={{
+                    padding: '8px 20px',
+                    backgroundColor: '#059669',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontSize: '13px',
+                    fontWeight: '700',
+                    color: '#ffffff',
+                    cursor: 'pointer',
+                    boxShadow: '0 2px 4px rgba(5, 150, 105, 0.25)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px'
+                  }}
+                >
+                  <span>✓</span> 이 위치로 좌표 확정
+                </button>
+              </div>
             </div>
           </div>
         </div>
