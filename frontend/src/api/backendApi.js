@@ -228,10 +228,7 @@ export const updateZoneThresholdsApi = async (zoneId, thresholds) => {
 export const createBackendSensor = async (sensorData) => {
   const response = await fetch(`${BASE_URL}/api/dev/sensors`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'ngrok-skip-browser-warning': 'true'
-    },
+    headers: getAuthHeaders(),
     body: JSON.stringify(sensorData)
   });
   if (!response.ok) {

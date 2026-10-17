@@ -16,6 +16,7 @@ import {
   resolveAllAlertsApi,
   fetchCleaningRecordsApi,
   createCleaningRecordApi,
+  createBackendSensor,
   fetchDeviceSetsApi,
   fetchDeviceSetHistoryApi,
   updateDeviceSetApi,
@@ -542,6 +543,13 @@ export default function AdminPage() {
   // 기기 세트 수정 모달 (PATCH /api/admin/device-sets/{id})
   const [isEditDeviceSetModalOpen, setIsEditDeviceSetModalOpen] = useState(false);
   const [editingDeviceSet, setEditingDeviceSet] = useState(null);
+
+  // 센서 단독 추가 모달 (POST /api/dev/sensors)
+  const [isAddSensorModalOpen, setIsAddSensorModalOpen] = useState(false);
+  const [newSensorData, setNewSensorData] = useState({
+    zoneId: '',
+    sensorType: 'TEMP_HUMID'
+  });
 
   // 기기 세트 변경 이력 모달 (GET /api/admin/device-sets/{id}/history)
   const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
@@ -1414,19 +1422,38 @@ export default function AdminPage() {
     }
   };
 
-  // 기기 세트 수정 열기 (PATCH /api/admin/device-sets/{id})
+  // 기기 세트 수정 열기 (화장실 목록에서 호출)
   const handleOpenEditDeviceSet = (restroom) => {
-    const matchingSet = deviceSets.find(ds => ds.macAddress?.toLowerCase() === restroom.macAddress?.toLowerCase() || ds.zoneId === restroom.id);
+    const matchingSet = deviceSets.find(ds => 
+      (restroom.macAddress && ds.macAddress?.toLowerCase() === restroom.macAddress?.toLowerCase()) ||
+      ds.zoneId === restroom.id
+    );
+    const targetSet = matchingSet || deviceSets[0];
+    if (!targetSet) {
+      showToast('연결된 기기 세트가 없습니다. 시스템 탭에서 먼저 기기 세트를 등록해주세요.');
+      return;
+    }
     setEditingDeviceSet({
-      id: matchingSet ? matchingSet.id : restroom.id,
-      label: matchingSet?.installationLabel || restroom.name,
-      zoneId: restroom.id,
-      macAddress: restroom.macAddress || restroom.deviceId || '24:DC:C3:99:AA:01'
+      id: targetSet.deviceSetId,
+      label: targetSet.installationLabel || restroom.name,
+      zoneId: targetSet.zoneId || restroom.id,
+      macAddress: targetSet.macAddress || restroom.macAddress || '24:DC:C3:99:AA:01'
     });
     setIsEditDeviceSetModalOpen(true);
   };
 
-  // 기기 세트 수정 저장
+  // 기기 세트 수정 열기 (기기 세트 목록에서 직접 호출 - PATCH /api/admin/device-sets/{id})
+  const handleOpenEditDeviceSetFromSet = (ds) => {
+    setEditingDeviceSet({
+      id: ds.deviceSetId,
+      label: ds.installationLabel || ds.setCode,
+      zoneId: ds.zoneId,
+      macAddress: ds.macAddress
+    });
+    setIsEditDeviceSetModalOpen(true);
+  };
+
+  // 기기 세트 수정 저장 (PATCH /api/admin/device-sets/{id})
   const handleSaveEditDeviceSet = async () => {
     if (!editingDeviceSet) return;
     try {
@@ -1438,7 +1465,8 @@ export default function AdminPage() {
       });
       showToast('기기 세트 정보 및 설치 구역이 DB에 수정되었습니다.');
       setIsEditDeviceSetModalOpen(false);
-      fetchDeviceSetsApi().then(setDeviceSets);
+      const sets = await fetchDeviceSetsApi();
+      setDeviceSets(sets);
       await handleManualRefresh();
     } catch (err) {
       console.error('기기 수정 실패:', err);
@@ -1448,18 +1476,86 @@ export default function AdminPage() {
     }
   };
 
-  // 기기 세트 감사 히스토리 열기 (GET /api/admin/device-sets/{id}/history)
+  // 기기 세트 감사 히스토리 열기 (화장실 목록에서 호출)
   const handleOpenDeviceSetHistory = async (restroom) => {
-    const matchingSet = deviceSets.find(ds => ds.macAddress?.toLowerCase() === restroom.macAddress?.toLowerCase() || ds.zoneId === restroom.id);
-    const targetId = matchingSet ? matchingSet.id : (typeof restroom.id === 'number' ? restroom.id : 1);
-    setHistoryDeviceSetTitle(restroom.name);
+    const matchingSet = deviceSets.find(ds => 
+      (restroom.macAddress && ds.macAddress?.toLowerCase() === restroom.macAddress?.toLowerCase()) ||
+      ds.zoneId === restroom.id
+    );
+    const targetSet = matchingSet || deviceSets[0];
+    if (!targetSet) {
+      showToast('등록된 기기 세트가 없어 이력을 조회할 수 없습니다.');
+      return;
+    }
+    setHistoryDeviceSetTitle(`${targetSet.setCode} - ${restroom.name || targetSet.installationLabel}`);
     try {
-      const hist = await fetchDeviceSetHistoryApi(targetId);
+      setDataLoading(true);
+      const hist = await fetchDeviceSetHistoryApi(targetSet.deviceSetId);
       setDeviceSetHistories(hist);
     } catch (err) {
+      console.error('기기 이력 조회 실패:', err);
       setDeviceSetHistories([]);
+    } finally {
+      setDataLoading(false);
     }
     setIsHistoryModalOpen(true);
+  };
+
+  // 기기 세트 감사 히스토리 열기 (기기 세트 목록에서 직접 호출 - GET /api/admin/device-sets/{id}/history)
+  const handleOpenDeviceSetHistoryFromSet = async (ds) => {
+    setHistoryDeviceSetTitle(`${ds.setCode} (${ds.installationLabel || ds.macAddress})`);
+    try {
+      setDataLoading(true);
+      const hist = await fetchDeviceSetHistoryApi(ds.deviceSetId);
+      setDeviceSetHistories(hist);
+    } catch (err) {
+      console.error('기기 이력 조회 실패:', err);
+      setDeviceSetHistories([]);
+    } finally {
+      setDataLoading(false);
+    }
+    setIsHistoryModalOpen(true);
+  };
+
+  // 기기 세트 삭제 (DELETE /api/admin/device-sets/{id})
+  const handleDeleteDeviceSet = async (deviceSetId) => {
+    if (!window.confirm(`기기 세트 #${deviceSetId}를 정말 삭제하시겠습니까? 연결된 센서 매핑이 해제됩니다.`)) return;
+    try {
+      setDataLoading(true);
+      await deleteDeviceSetApi(deviceSetId);
+      showToast('기기 세트가 삭제되었습니다.');
+      const sets = await fetchDeviceSetsApi();
+      setDeviceSets(sets);
+      await handleManualRefresh();
+    } catch (err) {
+      console.error('기기 세트 삭제 실패:', err);
+      showToast('기기 삭제 실패: ' + err.message);
+    } finally {
+      setDataLoading(false);
+    }
+  };
+
+  // 센서 단독 추가 핸들러 (POST /api/dev/sensors)
+  const handleCreateSensor = async () => {
+    if (!newSensorData.zoneId) {
+      showToast('센서를 설치할 구역을 선택해주세요.');
+      return;
+    }
+    try {
+      setDataLoading(true);
+      const sensorId = await createBackendSensor({
+        zoneId: Number(newSensorData.zoneId),
+        sensorType: newSensorData.sensorType
+      });
+      showToast(`센서(ID: ${sensorId})가 구역 #${newSensorData.zoneId}에 단독 등록되었습니다.`);
+      setIsAddSensorModalOpen(false);
+      await handleManualRefresh();
+    } catch (err) {
+      console.error('센서 단독 등록 실패:', err);
+      showToast('센서 등록 실패: ' + err.message);
+    } finally {
+      setDataLoading(false);
+    }
   };
 
   // 중앙 시스템 운영 설정 저장 핸들러 (PUT /api/admin/settings)
@@ -3050,6 +3146,16 @@ export default function AdminPage() {
                   </div>
 
                   <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      onClick={() => {
+                        const firstZoneId = accessibleRestrooms[0]?.id || restrooms[0]?.id || 3;
+                        setNewSensorData({ zoneId: firstZoneId, sensorType: 'TEMP_HUMID' });
+                        setIsAddSensorModalOpen(true);
+                      }}
+                      style={{ ...styles.secondaryBtn, borderColor: '#3b82f6', color: '#1d4ed8' }}
+                    >
+                      <IconPlus /> 센서 단독 추가
+                    </button>
                     <button onClick={() => setIsAddZoneModalOpen(true)} style={styles.secondaryBtn}>
                       <IconPlus /> 신규 구역 등록
                     </button>
@@ -3283,7 +3389,19 @@ export default function AdminPage() {
                       </h4>
                       <span style={{ fontSize: '11px', color: '#64748b' }}>ESP32 컨트롤러 MAC 주소와 관제 구역 매핑 현황입니다.</span>
                     </div>
-                    <button onClick={() => fetchDeviceSetsApi().then(setDeviceSets)} style={styles.secondaryBtn}>새로고침</button>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button
+                        onClick={() => {
+                          const firstZoneId = accessibleRestrooms[0]?.id || restrooms[0]?.id || 3;
+                          setNewSensorData({ zoneId: firstZoneId, sensorType: 'TEMP_HUMID' });
+                          setIsAddSensorModalOpen(true);
+                        }}
+                        style={{ ...styles.secondaryBtn, color: '#2563eb' }}
+                      >
+                        <IconPlus /> 센서 단독 추가
+                      </button>
+                      <button onClick={() => fetchDeviceSetsApi().then(setDeviceSets)} style={styles.secondaryBtn}>새로고침</button>
+                    </div>
                   </div>
                   {deviceSets && deviceSets.length > 0 ? (
                     <table style={styles.table}>
@@ -3293,6 +3411,7 @@ export default function AdminPage() {
                           <th style={styles.th}>MAC 주소</th>
                           <th style={styles.th}>연동 구역</th>
                           <th style={styles.th}>설치 라벨</th>
+                          <th style={{ ...styles.th, textAlign: 'center' }}>동작</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -3302,6 +3421,28 @@ export default function AdminPage() {
                             <td style={{ ...styles.td, fontFamily: 'monospace' }}>{ds.macAddress}</td>
                             <td style={styles.td}>{ds.zoneName || `Zone #${ds.zoneId}`}</td>
                             <td style={styles.td}>{ds.installationLabel || '—'}</td>
+                            <td style={{ ...styles.td, textAlign: 'center' }}>
+                              <div style={{ display: 'inline-flex', gap: '6px' }}>
+                                <button
+                                  onClick={() => handleOpenEditDeviceSetFromSet(ds)}
+                                  style={{ ...styles.actionBtnSmall, color: '#2563eb' }}
+                                >
+                                  수정
+                                </button>
+                                <button
+                                  onClick={() => handleOpenDeviceSetHistoryFromSet(ds)}
+                                  style={{ ...styles.actionBtnSmall, color: '#4f46e5' }}
+                                >
+                                  이력
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteDeviceSet(ds.deviceSetId)}
+                                  style={{ ...styles.actionBtnSmall, color: '#dc2626' }}
+                                >
+                                  삭제
+                                </button>
+                              </div>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -3967,6 +4108,54 @@ export default function AdminPage() {
             </div>
             <div style={styles.modalFooter}>
               <button onClick={() => setIsHistoryModalOpen(false)} style={styles.primaryBtn}>닫기</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 4. 센서 단독 등록 모달 (POST /api/dev/sensors) */}
+      {isAddSensorModalOpen && (
+        <div style={styles.modalOverlay} onClick={() => setIsAddSensorModalOpen(false)}>
+          <div style={{ ...styles.modalContent, maxWidth: '480px' }} onClick={e => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>센서 단독 추가 등록 (POST /api/dev/sensors)</h3>
+                <span style={{ fontSize: '11px', color: '#64748b' }}>
+                  지정 구역(Zone)에 독립 센서(온습도, 악취가스, 도어 마그네틱)를 단독 추가합니다.
+                </span>
+              </div>
+              <button onClick={() => setIsAddSensorModalOpen(false)} style={styles.modalClose}>&times;</button>
+            </div>
+            <div style={styles.modalBody}>
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>설치 대상 구역 (Zone)</label>
+                <select
+                  value={newSensorData.zoneId}
+                  onChange={e => setNewSensorData({ ...newSensorData, zoneId: e.target.value })}
+                  style={styles.formSelect}
+                >
+                  <option value="">-- 설치 구역 선택 --</option>
+                  {accessibleRestrooms.map(r => (
+                    <option key={r.id} value={r.id}>{r.name} ({r.floor}) - 구역 #{r.id}</option>
+                  ))}
+                </select>
+              </div>
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>센서 종류 (Sensor Type)</label>
+                <select
+                  value={newSensorData.sensorType}
+                  onChange={e => setNewSensorData({ ...newSensorData, sensorType: e.target.value })}
+                  style={styles.formSelect}
+                >
+                  <option value="TEMP_HUMID">TEMP_HUMID (온습도 센서 - DHT22)</option>
+                  <option value="GAS">GAS (유해가스/복합악취 센서 - MQ-135 / MQ-7)</option>
+                  <option value="MAG">MAG (도어 개폐 감지 마그네틱 센서)</option>
+                </select>
+              </div>
+            </div>
+            <div style={styles.modalFooter}>
+              <button onClick={() => setIsAddSensorModalOpen(false)} style={styles.secondaryBtn}>취소</button>
+              <button onClick={handleCreateSensor} style={styles.primaryBtn}>센서 등록 완료</button>
             </div>
           </div>
         </div>
