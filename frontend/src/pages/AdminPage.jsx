@@ -88,6 +88,13 @@ const IconMap = () => (
   </svg>
 );
 
+const IconMapPin = ({ size = 13, color = 'currentColor', style = {} }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z" />
+    <circle cx="12" cy="10" r="3" />
+  </svg>
+);
+
 const IconBell = ({ size = 14, color = 'currentColor', style = {} }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: style.marginRight !== undefined ? style.marginRight : '6px', ...style }}>
     <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
@@ -5087,12 +5094,8 @@ export default function AdminPage() {
                         boxShadow: '0 1px 2px rgba(5, 150, 105, 0.25)'
                       }}
                     >
-                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                        <polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6" />
-                        <line x1="8" y1="2" x2="8" y2="18" />
-                        <line x1="16" y1="6" x2="16" y2="22" />
-                      </svg>
-                      🗺️ 지도 핀 / 주소 검색
+                      <IconMapPin size={13} color="#ffffff" />
+                      <span>지도 핀 / 주소 검색</span>
                     </button>
                     <button
                       type="button"
@@ -5630,7 +5633,8 @@ export default function AdminPage() {
                       cursor: 'pointer'
                     }}
                   >
-                    🗺️ 지도 핀 / 주소 검색
+                    <IconMapPin size={12} color="#ffffff" />
+                    <span>지도 핀 / 주소 검색</span>
                   </button>
                   <button
                     type="button"
@@ -5729,7 +5733,8 @@ export default function AdminPage() {
                       cursor: 'pointer'
                     }}
                   >
-                    🗺️ 지도 핀 / 주소 검색
+                    <IconMapPin size={12} color="#ffffff" />
+                    <span>지도 핀 / 주소 검색</span>
                   </button>
                   <button
                     type="button"
@@ -6006,7 +6011,8 @@ export default function AdminPage() {
             >
               <div>
                 <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '700', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  🗺️ 지도 핀 찍기 &amp; 주소 검색
+                  <IconMapPin size={18} color="#059669" />
+                  지도 핀 찍기 &amp; 주소 검색
                   <span style={{ fontSize: '11px', fontWeight: '600', backgroundColor: '#ecfdf5', color: '#059669', padding: '2px 8px', borderRadius: '12px', border: '1px solid #a7f3d0' }}>
                     HTTP 환경 지원
                   </span>
