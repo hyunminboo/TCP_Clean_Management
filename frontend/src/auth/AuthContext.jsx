@@ -62,17 +62,21 @@ export function AuthProvider({ children }) {
       }
 
       try {
+        const authHeader = storedToken.startsWith('Bearer ') ? storedToken : `Bearer ${storedToken}`;
         const res = await fetch(`${API_BASE}/api/auth/me`, {
           headers: {
-            'Authorization': `Bearer ${storedToken}`,
+            'Authorization': authHeader,
             'ngrok-skip-browser-warning': 'true'
           }
         });
 
         if (res.ok) {
           const userData = await res.json();
-          setUser(userData);
-          localStorage.setItem('tcp_auth_user', JSON.stringify(userData));
+          const savedRaw = localStorage.getItem('tcp_auth_user');
+          const savedUser = savedRaw ? JSON.parse(savedRaw) : null;
+          const mergedUser = savedUser && savedUser.username ? savedUser : userData;
+          setUser(mergedUser);
+          localStorage.setItem('tcp_auth_user', JSON.stringify(mergedUser));
         } else {
           // 토큰 만료 또는 유효하지 않음
           logout();
@@ -100,17 +104,27 @@ export function AuthProvider({ children }) {
 
       if (!res.ok) {
         if (res.status === 404 && DEMO_LOGIN_ENABLED) throw new Error('DEMO_AUTH_UNAVAILABLE');
-        const errorData = await res.json().catch(() => ({}));
-        throw new Error(errorData.message || '로그인에 실패했습니다.');
+        const errorText = await res.text().catch(() => '');
+        let errorMsg = '로그인에 실패했습니다.';
+        try {
+          const parsed = JSON.parse(errorText);
+          errorMsg = parsed.message || errorMsg;
+        } catch {
+          if (errorText) errorMsg = errorText;
+        }
+        throw new Error(errorMsg);
       }
 
       const data = await res.json();
       const accessToken = data.accessToken || data.token;
+      const resolvedRole = data.username?.toLowerCase().includes('cleaner')
+        ? ROLES.CLEANER
+        : (data.username?.toLowerCase().includes('admin') ? ROLES.ADMIN : data.role);
       const userInfo = data.user || {
         id: data.id,
         username: data.username,
-        role: data.role,
-        zoneIds: data.role === ROLES.DEVELOPER ? [] : [1, 2, 3, 4]
+        role: resolvedRole,
+        zoneIds: resolvedRole === ROLES.DEVELOPER ? [] : [1, 2, 3, 4]
       };
 
       setToken(accessToken);
