@@ -44,6 +44,7 @@ import {
   deleteUserApi,
   fetchUpstashStatusApi,
   getKstDateString,
+  parseUtcDate,
   loadStoredCleaningLogs,
   persistCleaningLog,
   fetchDiscoveredDevicesApi,
@@ -418,7 +419,8 @@ const buildRestroomsFromBackend = (zones, devices = [], workersList = [], cleani
 
     let computedLastCleanedHours = 1.0;
     if (cleanedTimestamp) {
-      const diffHours = (Date.now() - new Date(cleanedTimestamp).getTime()) / 3600000;
+      const parsed = parseUtcDate(cleanedTimestamp);
+      const diffHours = parsed ? (Date.now() - parsed.getTime()) / 3600000 : NaN;
       if (Number.isFinite(diffHours) && diffHours >= 0) {
         computedLastCleanedHours = Number(diffHours.toFixed(1));
       }
@@ -444,7 +446,7 @@ const buildRestroomsFromBackend = (zones, devices = [], workersList = [], cleani
       isLive: z.isOurSolution ?? true,
       isFromDb: true,
       ingestSource: dev?.ingestSource || 'mysql',
-      lastUpdated: dev?.measuredAt ? new Date(dev.measuredAt).toLocaleTimeString('ko-KR') : '방금 전',
+      lastUpdated: dev?.measuredAt ? parseUtcDate(dev.measuredAt).toLocaleTimeString('ko-KR') : '방금 전',
       lastCleanedHours: computedLastCleanedHours,
       assignedWorkerId: assignedWorkerId,
       cleanWorker: assignedWorkerName,
@@ -955,7 +957,7 @@ export default function AdminPage() {
     if (!dbAlerts || !Array.isArray(dbAlerts)) return;
     const mapped = dbAlerts.map(a => ({
       id: a.alertId,
-      time: a.createdAt ? new Date(a.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '최근',
+      time: a.createdAt ? parseUtcDate(a.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '최근',
       restroom: a.zoneName || '관제 구역',
       metric: a.alertType || '임계 감지',
       value: a.installationLabel || '현장 점검 필요',
@@ -975,7 +977,7 @@ export default function AdminPage() {
       id: r.id,
       zoneId: r.zoneId,
       createdAt: r.createdAt,
-      time: r.createdAt ? new Date(r.createdAt).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '최근',
+      time: r.createdAt ? parseUtcDate(r.createdAt).toLocaleString('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '최근',
       restroomName: r.restroomName,
       worker: r.worker,
       type: r.type,
@@ -2476,7 +2478,7 @@ export default function AdminPage() {
   };
 
   // 측정 시각을 x값으로 써서 수신이 끊긴 구간도 실제 시간 간격대로 보이게 합니다.
-  const historyTimes = historyPoints.map(point => new Date(point.measuredAt).getTime());
+  const historyTimes = historyPoints.map(point => parseUtcDate(point.measuredAt)?.getTime() || new Date(point.measuredAt).getTime());
   const historySpan = historyTimes.length > 1 ? historyTimes[historyTimes.length - 1] - historyTimes[0] : 0;
   // 눈금이 6개 이하가 되는 가장 촘촘한 '딱 떨어지는' 간격(분)을 고릅니다.
   const tickStepMinutes = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440].find(m => historySpan / (m * 60000) <= 6) ?? 1440;
@@ -4625,7 +4627,7 @@ export default function AdminPage() {
                               </div>
                             )}
                             <div style={{ fontSize: '12px', color: '#64748b' }}>
-                              최근 신호: <span style={{ color: '#0f172a', fontWeight: '500' }}>{dev.lastSeenAt ? new Date(dev.lastSeenAt).toLocaleTimeString('ko-KR') : '방금'}</span>
+                              최근 신호: <span style={{ color: '#0f172a', fontWeight: '500' }}>{dev.lastSeenAt ? parseUtcDate(dev.lastSeenAt).toLocaleTimeString('ko-KR') : '방금'}</span>
                               {dev.requestCount > 1 && ` (${dev.requestCount}회)`}
                             </div>
                             {dev.latitude != null && dev.longitude != null && (
@@ -5025,7 +5027,7 @@ export default function AdminPage() {
                       <div><span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>Redis 구성:</span> <strong>{upstashStatus.configured ? '설정 완료 (OK)' : '미설정'}</strong></div>
                       <div><span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>동기화 활성:</span> <strong>{upstashStatus.enabled ? '작동 중' : '비활성'}</strong></div>
                       <div><span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>누적 수집 데이터:</span> <strong>{upstashStatus.importedSamples != null ? upstashStatus.importedSamples.toLocaleString() : 0}건</strong></div>
-                      <div><span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>최근 성공 시각:</span> <strong>{upstashStatus.lastSuccess ? new Date(upstashStatus.lastSuccess).toLocaleTimeString('ko-KR') : '대기 중'}</strong></div>
+                      <div><span style={{ color: '#64748b', display: 'block', marginBottom: '4px' }}>최근 성공 시각:</span> <strong>{upstashStatus.lastSuccess ? parseUtcDate(upstashStatus.lastSuccess).toLocaleTimeString('ko-KR') : '대기 중'}</strong></div>
                     </div>
                   ) : (
                     <div style={{ fontSize: '12px', color: '#94a3b8', padding: '12px 0' }}>클라우드 동기화 상태를 확인하고 있습니다...</div>
@@ -6260,7 +6262,7 @@ export default function AdminPage() {
                       {deviceSetHistories.map(h => (
                         <tr key={h.historyId} style={styles.tr}>
                           <td style={{ ...styles.td, fontSize: '11px', whiteSpace: 'nowrap' }}>
-                            {h.changedAt ? new Date(h.changedAt).toLocaleString('ko-KR') : '-'}
+                            {h.changedAt ? parseUtcDate(h.changedAt).toLocaleString('ko-KR') : '-'}
                           </td>
                           <td style={{ ...styles.td, fontFamily: 'monospace', fontSize: '11px', whiteSpace: 'nowrap' }}>{h.setCode}</td>
                           <td style={{ ...styles.td, whiteSpace: 'nowrap' }}>{h.installationLabel}</td>

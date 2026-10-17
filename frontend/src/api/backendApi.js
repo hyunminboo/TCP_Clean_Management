@@ -29,6 +29,30 @@ export const getKstDateString = (date = new Date()) => {
   }
 };
 
+/**
+ * 백엔드(Docker/Spring Boot)에서 전송된 UTC 타임스탬프를 브라우저 로컬 시간(KST)으로 정확히 파싱합니다.
+ * 타임존 표기(Z)가 누락되어 9시간 시차가 발생하는 문제를 방지합니다.
+ */
+export const parseUtcDate = (val) => {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  if (typeof val === 'number') return new Date(val);
+  const str = String(val).trim();
+  if (!str) return null;
+  try {
+    let d;
+    if (str.endsWith('Z') || /[+-]\d{2}(:\d{2})?$/.test(str)) {
+      d = new Date(str);
+    } else {
+      const isoStr = str.includes(' ') ? str.replace(' ', 'T') : str;
+      d = new Date(`${isoStr}Z`);
+    }
+    return isNaN(d.getTime()) ? new Date(str) : d;
+  } catch {
+    return new Date(str);
+  }
+};
+
 export const getAuthHeaders = () => {
   const token = localStorage.getItem('tcp_auth_token') || localStorage.getItem('token') || 'admin-token';
   const bearer = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
