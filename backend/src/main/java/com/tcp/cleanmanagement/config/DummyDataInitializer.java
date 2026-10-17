@@ -37,43 +37,7 @@ public class DummyDataInitializer implements CommandLineRunner {
     @Override
     @Transactional
     public void run(String... args) throws Exception {
-        if (zoneRepository.count() == 0) {
-            Zone zone1 = Zone.builder()
-                    .name("Gangnam Station Exit 1 Public Toilet")
-                    .address("101 Teheran-ro, Gangnam-gu, Seoul")
-                    .latitude(37.4979)
-                    .longitude(127.0276)
-                    .zoneType(ZoneType.TOILET)
-                    .isOurSolution(true)
-                    .pleasantThreshold(50.0f)
-                    .build();
-
-            Zone zone2 = Zone.builder()
-                    .name("Yeoksam Station Exit 3 Smoking Area")
-                    .address("152 Teheran-ro, Gangnam-gu, Seoul")
-                    .latitude(37.5006)
-                    .longitude(127.0364)
-                    .zoneType(ZoneType.SMOKING)
-                    .isOurSolution(true)
-                    .pleasantThreshold(200.0f)
-                    .build();
-
-            zoneRepository.save(zone1);
-            zoneRepository.save(zone2);
-
-            Sensor sensor1 = Sensor.builder().zone(zone1).sensorType(SensorType.GAS).sensorModel(SensorModel.MQ135).status(SensorStatus.ACTIVE).build();
-            Sensor sensor2 = Sensor.builder().zone(zone2).sensorType(SensorType.GAS).sensorModel(SensorModel.MQ7).status(SensorStatus.ACTIVE).build();
-            Sensor sensor3 = Sensor.builder().zone(zone1).sensorType(SensorType.TEMP_HUMID).sensorModel(SensorModel.DHT22).status(SensorStatus.ACTIVE).build();
-            sensorRepository.save(sensor1);
-            sensorRepository.save(sensor2);
-            sensorRepository.save(sensor3);
-
-            saveGasReading(sensor1, "10");
-            saveGasReading(sensor2, "300");
-            saveTempHumidReading(sensor3, "24.5", "55.0");
-
-            System.out.println("[DummyDataInitializer] Dummy Zones, Sensors, and Data generated.");
-        }
+        // Mock / Dummy data generation permanently disabled
     }
 
     private void saveGasReading(Sensor sensor, String value) {

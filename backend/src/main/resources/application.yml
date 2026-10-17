@@ -33,4 +33,4 @@ iot:
 app:
   rate-limit:
     store: ${RATE_LIMIT_STORE:redis}
-  seed-demo-data: ${SEED_DEMO_DATA:true}
+  seed-demo-data: ${SEED_DEMO_DATA:false}
