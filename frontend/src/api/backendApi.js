@@ -498,6 +498,22 @@ export const loginApi = async (username, password) => {
 };
 
 /**
+ * 기기 세트 신규 등록 API (POST /api/admin/device-sets)
+ */
+export const createDeviceSetApi = async (deviceSetData) => {
+  const response = await fetch(`${BASE_URL}/api/admin/device-sets`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(deviceSetData)
+  });
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => '');
+    throw new Error(errorText || `기기 등록 실패 (${response.status})`);
+  }
+  return response.json();
+};
+
+/**
  * 기기 세트 수정 API (PATCH)
  */
 export const updateDeviceSetApi = async (deviceSetId, updateData) => {
