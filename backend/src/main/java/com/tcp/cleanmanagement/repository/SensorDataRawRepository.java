@@ -40,4 +40,23 @@ public interface SensorDataRawRepository extends JpaRepository<SensorDataRaw, Lo
 
     Optional<SensorDataRaw> findFirstByMetricSensorZoneIdAndMetricSensorSensorModelOrderByMeasuredAtDescIdDesc(
             Long zoneId, SensorModel sensorModel);
+
+    List<SensorDataRaw> findByMetricSensorZoneIdAndMeasuredAtGreaterThanEqualOrderByMeasuredAtDescIdDesc(
+            Long zoneId, LocalDateTime from, org.springframework.data.domain.Pageable pageable);
+
+    @Modifying
+    @Query("UPDATE SensorDataRaw d SET d.deviceSetHistory = NULL WHERE d.deviceSetHistory.deviceSet.id = :setId")
+    int unlinkByDeviceSetId(@Param("setId") Long deviceSetId);
+
+    @Modifying
+    @Query("UPDATE SensorDataRaw d SET d.deviceSetHistory = NULL WHERE d.deviceSetHistory.zone.id = :zoneId")
+    int unlinkByZoneId(@Param("zoneId") Long zoneId);
+
+    @Modifying
+    @Query("DELETE FROM SensorDataRaw d WHERE d.metric.sensor.id = :sensorId")
+    int deleteBySensorId(@Param("sensorId") Long sensorId);
+
+    @Modifying
+    @Query("DELETE FROM SensorDataRaw d WHERE d.metric.sensor.zone.id = :zoneId")
+    int deleteByZoneId(@Param("zoneId") Long zoneId);
 }

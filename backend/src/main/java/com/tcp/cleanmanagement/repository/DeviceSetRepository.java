@@ -14,6 +14,7 @@ public interface DeviceSetRepository extends JpaRepository<DeviceSet, Long> {
     Optional<DeviceSet> findByMacAddress(String macAddress);
     boolean existsBySetCode(String setCode);
     List<DeviceSet> findAllByOrderByIdAsc();
+    List<DeviceSet> findByZoneIdOrderByIdAsc(Long zoneId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT ds FROM DeviceSet ds WHERE ds.id = :id")

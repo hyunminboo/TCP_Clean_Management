@@ -74,7 +74,17 @@ export function AuthProvider({ children }) {
           const userData = await res.json();
           const savedRaw = localStorage.getItem('tcp_auth_user');
           const savedUser = savedRaw ? JSON.parse(savedRaw) : null;
-          const mergedUser = savedUser && savedUser.username ? savedUser : userData;
+          const resolvedRole = userData.role || savedUser?.role || ROLES.DEVELOPER;
+          const dbZoneIds = Array.isArray(userData.assignedZoneIds) && userData.assignedZoneIds.length > 0
+            ? userData.assignedZoneIds
+            : (savedUser?.zoneIds || []);
+          const mergedUser = {
+            ...(savedUser || {}),
+            id: userData.id ?? savedUser?.id ?? 1,
+            username: userData.username || savedUser?.username || 'developer',
+            role: resolvedRole,
+            zoneIds: dbZoneIds
+          };
           setUser(mergedUser);
           localStorage.setItem('tcp_auth_user', JSON.stringify(mergedUser));
         } else {
@@ -117,14 +127,17 @@ export function AuthProvider({ children }) {
 
       const data = await res.json();
       const accessToken = data.accessToken || data.token;
-      const resolvedRole = data.username?.toLowerCase().includes('cleaner')
+      const resolvedRole = data.role || (data.username?.toLowerCase().includes('cleaner')
         ? ROLES.CLEANER
-        : (data.username?.toLowerCase().includes('admin') ? ROLES.ADMIN : data.role);
+        : (data.username?.toLowerCase().includes('admin') ? ROLES.ADMIN : ROLES.DEVELOPER));
+      const assignedZones = Array.isArray(data.assignedZoneIds) && data.assignedZoneIds.length > 0
+        ? data.assignedZoneIds
+        : (resolvedRole === ROLES.DEVELOPER ? [] : [1, 2, 3, 4]);
       const userInfo = data.user || {
         id: data.id,
         username: data.username,
         role: resolvedRole,
-        zoneIds: resolvedRole === ROLES.DEVELOPER ? [] : [1, 2, 3, 4]
+        zoneIds: assignedZones
       };
 
       setToken(accessToken);

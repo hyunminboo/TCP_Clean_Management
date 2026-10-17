@@ -2,12 +2,16 @@ package com.tcp.cleanmanagement.service;
 
 import com.tcp.cleanmanagement.dto.ZonePublicResponse;
 import com.tcp.cleanmanagement.dto.ZoneStatusResponse;
+import com.tcp.cleanmanagement.entity.CleaningRecord;
 import com.tcp.cleanmanagement.entity.SensorDataRaw;
+import com.tcp.cleanmanagement.entity.Worker;
 import com.tcp.cleanmanagement.entity.Zone;
 import com.tcp.cleanmanagement.enums.MetricCode;
 import com.tcp.cleanmanagement.enums.SensorModel;
 import com.tcp.cleanmanagement.enums.ZoneType;
+import com.tcp.cleanmanagement.repository.CleaningRecordRepository;
 import com.tcp.cleanmanagement.repository.SensorDataRawRepository;
+import com.tcp.cleanmanagement.repository.WorkerRepository;
 import com.tcp.cleanmanagement.repository.ZoneRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -22,6 +26,8 @@ import java.util.stream.Collectors;
 public class PublicZoneService {
     private final ZoneRepository zoneRepository;
     private final SensorDataRawRepository sensorDataRawRepository;
+    private final WorkerRepository workerRepository;
+    private final CleaningRecordRepository cleaningRecordRepository;
 
     @Transactional(readOnly = true)
     public List<ZonePublicResponse> getZones(ZoneType type, Double lat, Double lng, Double radius) {
@@ -51,10 +57,37 @@ public class PublicZoneService {
         ZonePublicResponse.ZonePublicResponseBuilder builder = ZonePublicResponse.builder()
                 .zoneId(zone.getId())
                 .name(zone.getName())
+                .address(zone.getAddress())
+                .zoneType(zone.getZoneType() != null ? zone.getZoneType().name() : "TOILET")
                 .latitude(zone.getLatitude())
                 .longitude(zone.getLongitude())
                 .isOurSolution(zone.getIsOurSolution())
-                .isActive(zone.getIsActive() != null ? zone.getIsActive() : true);
+                .isActive(zone.getIsActive() != null ? zone.getIsActive() : true)
+                .pleasantThreshold(zone.getPleasantThreshold())
+                .needsVentilationThreshold(zone.getNeedsVentilationThreshold());
+
+        // 담당 청소관리인 매핑 (Zone 우선, 없으면 Worker 테이블의 assignedZoneId 조회)
+        if (zone.getAssignedWorkerName() != null && !zone.getAssignedWorkerName().isBlank()) {
+            builder.assignedWorkerId(zone.getAssignedWorkerId())
+                   .assignedWorkerName(zone.getAssignedWorkerName());
+        } else {
+            Optional<Worker> assignedWorker = workerRepository.findFirstByAssignedZoneIdOrderByIdAsc(zone.getId());
+            assignedWorker.ifPresent(w -> builder
+                    .assignedWorkerId(w.getId())
+                    .assignedWorkerName(w.getName()));
+        }
+
+        // 최근 청소 기록 매핑
+        List<CleaningRecord> records = cleaningRecordRepository.findByZoneIdOrderByCreatedAtDesc(zone.getId());
+        if (records != null && !records.isEmpty()) {
+            CleaningRecord latestRecord = records.get(0);
+            if (latestRecord.getCreatedAt() != null) {
+                builder.lastCleanedAt(latestRecord.getCreatedAt().toString());
+            }
+            if (latestRecord.getWorker() != null && !latestRecord.getWorker().isBlank()) {
+                builder.lastCleanedWorker(latestRecord.getWorker());
+            }
+        }
 
         Optional<SensorDataRaw> latestMq135 = latestSensorReading(zone.getId(), SensorModel.MQ135);
         if (latestMq135.isEmpty()) {
@@ -75,12 +108,14 @@ public class PublicZoneService {
             builder.gasLevel(gasLevel);
 
             if (zone.getZoneType() == ZoneType.TOILET) {
-                if (zone.getPleasantThreshold() == null) {
-                    builder.status("Unknown").color("#9ca3af");
+                float pleasant = zone.getPleasantThreshold() != null ? zone.getPleasantThreshold() : 300.0f;
+                float vent = zone.getNeedsVentilationThreshold() != null ? zone.getNeedsVentilationThreshold() : 600.0f;
+                if (gasLevel >= vent) {
+                    builder.status("Needs Cleaning").color("#ef4444");
+                } else if (gasLevel >= pleasant) {
+                    builder.status("Caution").color("#f59e0b");
                 } else {
-                    boolean isClean = gasLevel < zone.getPleasantThreshold();
-                    builder.status(isClean ? "Clean" : "Needs Cleaning");
-                    builder.color(isClean ? "#10b981" : "#ef4444");
+                    builder.status("Clean").color("#10b981");
                 }
             } else {
                 boolean isCrowded = gasLevel > 200.0f;
@@ -109,12 +144,21 @@ public class PublicZoneService {
     public ZoneStatusResponse getZoneStatus(Long zoneId) {
         Zone zone = zoneRepository.findById(zoneId)
                 .orElseThrow(() -> new IllegalArgumentException("Zone not found"));
+        ZonePublicResponse mapped = mapToResponseWithSensorData(zone);
+        String rawStatus = mapped.getStatus();
+        String normStatus = "Needs Cleaning".equals(rawStatus) ? "DANGER"
+                : ("Caution".equals(rawStatus) || "Crowded".equals(rawStatus)) ? "WARN"
+                : "No Data".equals(rawStatus) ? "OFFLINE" : "NORMAL";
+        String msg = "DANGER".equals(normStatus) ? "환기 및 긴급 청소 점검이 필요한 상태입니다."
+                : "WARN".equals(normStatus) ? "실내 공기질 주의 단계입니다."
+                : "OFFLINE".equals(normStatus) ? "센서 측정 데이터 수신 대기 중입니다."
+                : "이용하기 쾌적한 상태입니다.";
 
         return ZoneStatusResponse.builder()
                 .zoneId(zone.getId())
                 .name(zone.getName())
-                .status("NORMAL")
-                .statusMessage("이용하기 적절한 상태입니다.")
+                .status(normStatus)
+                .statusMessage(msg)
                 .build();
     }
 }

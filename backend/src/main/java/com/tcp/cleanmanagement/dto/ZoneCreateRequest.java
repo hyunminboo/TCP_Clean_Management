@@ -12,4 +12,6 @@ public class ZoneCreateRequest {
     private Boolean isOurSolution;
     private Float pleasantThreshold;
     private Float needsVentilationThreshold;
+    private Long assignedWorkerId;
+    private String assignedWorkerName;
 }

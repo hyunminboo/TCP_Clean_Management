@@ -1,6 +1,7 @@
 package com.tcp.cleanmanagement.repository;
 
 import com.tcp.cleanmanagement.entity.Sensor;
+import com.tcp.cleanmanagement.enums.SensorModel;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
@@ -12,6 +13,8 @@ import java.util.List;
 
 public interface SensorRepository extends JpaRepository<Sensor, Long> {
     List<Sensor> findByDeviceSetIdOrderByIdAsc(Long deviceSetId);
+    List<Sensor> findByZoneIdOrderByIdAsc(Long zoneId);
+    Optional<Sensor> findFirstByZoneIdAndSensorModelOrderByIdAsc(Long zoneId, SensorModel sensorModel);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT s FROM Sensor s WHERE s.deviceSet.id = :setId ORDER BY s.id")

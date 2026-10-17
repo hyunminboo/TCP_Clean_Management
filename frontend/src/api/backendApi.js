@@ -1,5 +1,34 @@
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
 
+export const getCurrentUserId = () => {
+  try {
+    const raw = localStorage.getItem('tcp_auth_user');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && Number.isFinite(Number(parsed.id))) {
+        return Number(parsed.id);
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return 1;
+};
+
+export const getKstDateString = (date = new Date()) => {
+  try {
+    return new Intl.DateTimeFormat('sv-SE', {
+      timeZone: 'Asia/Seoul',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(date);
+  } catch {
+    const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+    return kst.toISOString().slice(0, 10);
+  }
+};
+
 export const getAuthHeaders = () => {
   const token = localStorage.getItem('tcp_auth_token') || localStorage.getItem('token') || 'admin-token';
   const bearer = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
@@ -29,9 +58,6 @@ function getDistanceInMeters(lat1, lon1, lat2, lon2) {
 
 /**
  * 백엔드 서버(Spring Boot / ngrok)로부터 실제 IoT 구역 목록 및 최신 센서 데이터를 가져옵니다.
- * @param {'restroom' | 'smoking'} category 카테고리
- * @param {number|null} userLat 사용자 현재 위도 (거리 계산용)
- * @param {number|null} userLon 사용자 현재 경도 (거리 계산용)
  */
 export const fetchBackendZones = async (category, userLat = null, userLon = null) => {
   try {
@@ -55,7 +81,7 @@ export const fetchBackendZones = async (category, userLat = null, userLon = null
         name: `[IoT] ${item.name}`,
         lat: item.latitude,
         lon: item.longitude,
-        address: item.name,
+        address: item.address || item.name,
         distance: distance,
         type: category,
         temp: item.temp,
@@ -93,26 +119,30 @@ export const fetchAllPublicZones = async (signal) => {
 };
 
 /**
- * 백엔드 MySQL DB에 신규 화장실/관제구역을 등록합니다.
+ * 백엔드 MySQL DB에 신규 화장실/관제구역을 등록합니다. (F05, F06)
  */
 export const createBackendZone = async (zoneData) => {
+  const rawLat = zoneData.latitude ?? zoneData.lat;
+  const rawLng = zoneData.longitude ?? zoneData.lng;
+  const parsedLat = rawLat !== undefined && rawLat !== null && rawLat !== '' ? Number(rawLat) : NaN;
+  const parsedLng = rawLng !== undefined && rawLng !== null && rawLng !== '' ? Number(rawLng) : NaN;
+
   const payload = {
     name: zoneData.name,
     address: zoneData.address || `${zoneData.floor || '1F'} ${zoneData.gender || '공용'} 화장실`,
-    latitude: zoneData.lat ?? 37.5665,
-    longitude: zoneData.lng ?? 126.9780,
+    latitude: Number.isFinite(parsedLat) ? parsedLat : 37.566826,
+    longitude: Number.isFinite(parsedLng) ? parsedLng : 126.978656,
     zoneType: zoneData.zoneType || 'TOILET',
     isOurSolution: true,
     pleasantThreshold: zoneData.pleasantThreshold ?? 300.0,
-    needsVentilationThreshold: zoneData.needsVentilationThreshold ?? 600.0
+    needsVentilationThreshold: zoneData.needsVentilationThreshold ?? 600.0,
+    assignedWorkerId: zoneData.assignedWorkerId ?? null,
+    assignedWorkerName: zoneData.assignedWorkerName ?? null
   };
 
   const response = await fetch(`${BASE_URL}/api/dev/zones`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'ngrok-skip-browser-warning': 'true'
-    },
+    headers: getAuthHeaders(),
     body: JSON.stringify(payload)
   });
 
@@ -123,26 +153,29 @@ export const createBackendZone = async (zoneData) => {
 
   const zoneId = await response.json();
 
-  // 기기 ID (MAC 주소 등)가 있으면 Device Set 등록도 시도
+  // 기기 ID (MAC 주소 등)가 있으면 Device Set 등록도 시도하고 실패 시 명시적 경고 발생 (F06)
   if (zoneData.deviceId && zoneData.deviceId.trim()) {
-    try {
-      const rawMac = zoneData.deviceId.trim();
-      const macPattern = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
-      if (macPattern.test(rawMac)) {
-        const formattedMac = rawMac.toUpperCase().replace(/-/g, ':');
-        await fetch(`${BASE_URL}/api/admin/device-sets`, {
-          method: 'POST',
-          headers: getAuthHeaders(),
-          body: JSON.stringify({
-            setCode: `SET-${zoneId}`,
-            macAddress: formattedMac,
-            zoneId: zoneId,
-            installationLabel: zoneData.name
-          })
-        });
+    const rawMac = zoneData.deviceId.trim();
+    const macPattern = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+    if (macPattern.test(rawMac)) {
+      const formattedMac = rawMac.toUpperCase().replace(/-/g, ':');
+      const dsRes = await fetch(`${BASE_URL}/api/admin/device-sets`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          setCode: `SET-${zoneId}`,
+          macAddress: formattedMac,
+          zoneId: zoneId,
+          installationLabel: zoneData.name
+        })
+      });
+      if (!dsRes.ok) {
+        const dsErrText = await dsRes.text().catch(() => '');
+        console.warn(`[backendApi] 기기 세트 등록 실패 (${dsRes.status}):`, dsErrText);
+        if (zoneData.strictDeviceSet) {
+          throw new Error(`구역(#${zoneId})은 생성되었으나 기기 세트(MAC: ${formattedMac}) 등록에 실패했습니다 (${dsRes.status}): ${dsErrText}`);
+        }
       }
-    } catch (e) {
-      console.warn('[backendApi] 기기 세트 등록 부가 처리 경고:', e);
     }
   }
 
@@ -150,18 +183,17 @@ export const createBackendZone = async (zoneData) => {
 };
 
 /**
- * 백엔드 MySQL DB에서 구역을 삭제합니다.
+ * 백엔드 MySQL DB에서 구역을 삭제합니다. (F03)
  */
 export const deleteBackendZone = async (zoneId) => {
   const response = await fetch(`${BASE_URL}/api/dev/zones/${zoneId}`, {
     method: 'DELETE',
-    headers: {
-      'ngrok-skip-browser-warning': 'true'
-    }
+    headers: getAuthHeaders()
   });
 
   if (!response.ok && response.status !== 404) {
-    throw new Error(`구역 삭제 실패 (HTTP ${response.status})`);
+    const errText = await response.text().catch(() => '');
+    throw new Error(`구역 삭제 실패 (HTTP ${response.status})${errText ? `: ${errText}` : ''}`);
   }
 
   return true;
@@ -200,30 +232,42 @@ export const persistCleaningLog = (newLog, currentLogs = []) => {
 export const toggleZoneActiveApi = async (zoneId) => {
   const response = await fetch(`${BASE_URL}/api/dev/zones/${zoneId}/toggle-active`, {
     method: 'PATCH',
-    headers: { 'ngrok-skip-browser-warning': 'true' }
+    headers: getAuthHeaders()
   });
   if (!response.ok) throw new Error(`상태 변경 실패 (${response.status})`);
   return response.json();
 };
 
 /**
- * 구역 임계값 업데이트
+ * 구역 정보/임계값 업데이트 (PUT /api/dev/zones/{zoneId}) (F02, F10)
  */
 export const updateZoneThresholdsApi = async (zoneId, thresholds) => {
   const response = await fetch(`${BASE_URL}/api/dev/zones/${zoneId}`, {
     method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'ngrok-skip-browser-warning': 'true'
-    },
+    headers: getAuthHeaders(),
     body: JSON.stringify(thresholds)
   });
-  if (!response.ok) throw new Error(`임계값 저장 실패 (${response.status})`);
+  if (!response.ok) throw new Error(`구역 정보 저장 실패 (${response.status})`);
+  return response.json();
+};
+
+export const updateBackendZoneApi = updateZoneThresholdsApi;
+
+/**
+ * 구역별 청소 담당자(Worker) 지정/해제 API (PATCH /api/admin/zones/{id}/worker)
+ */
+export const assignZoneWorkerApi = async (zoneId, workerId = null, workerName = null) => {
+  const response = await fetch(`${BASE_URL}/api/admin/zones/${zoneId}/worker`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({ workerId, workerName })
+  });
+  if (!response.ok) throw new Error(`구역 담당자 지정 실패 (${response.status})`);
   return response.json();
 };
 
 /**
- * 백엔드 MySQL DB에 센서 단독 등록 (POST /api/dev/sensors)
+ * 백엔드 MySQL DB에 센서 단독 등록/조회/수정/삭제 (/api/dev/sensors)
  */
 export const createBackendSensor = async (sensorData) => {
   const response = await fetch(`${BASE_URL}/api/dev/sensors`, {
@@ -238,12 +282,42 @@ export const createBackendSensor = async (sensorData) => {
   return response.json();
 };
 
-/**
- * 미해결 알림 목록 조회
- */
-export const fetchAdminAlertsApi = async () => {
+export const fetchSensorsApi = async (zoneId = null) => {
   try {
-    const response = await fetch(`${BASE_URL}/api/admin/alerts`, {
+    const url = `${BASE_URL}/api/dev/sensors${zoneId ? `?zoneId=${zoneId}` : ''}`;
+    const response = await fetch(url, { headers: getAuthHeaders() });
+    if (!response.ok) return [];
+    return response.json();
+  } catch {
+    return [];
+  }
+};
+
+export const updateBackendSensorApi = async (sensorId, sensorData) => {
+  const response = await fetch(`${BASE_URL}/api/dev/sensors/${sensorId}`, {
+    method: 'PATCH',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(sensorData)
+  });
+  if (!response.ok) throw new Error(`센서 수정 실패 (${response.status})`);
+  return response.json();
+};
+
+export const deleteBackendSensorApi = async (sensorId) => {
+  const response = await fetch(`${BASE_URL}/api/dev/sensors/${sensorId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders()
+  });
+  if (!response.ok) throw new Error(`센서 삭제 실패 (${response.status})`);
+  return true;
+};
+
+/**
+ * 알림 목록 조회 (status: 'UNRESOLVED' | 'RESOLVED' | 'ALL') (F19)
+ */
+export const fetchAdminAlertsApi = async (status = 'UNRESOLVED') => {
+  try {
+    const response = await fetch(`${BASE_URL}/api/admin/alerts?status=${encodeURIComponent(status)}`, {
       headers: getAuthHeaders()
     });
     if (!response.ok) return [];
@@ -253,27 +327,51 @@ export const fetchAdminAlertsApi = async () => {
   }
 };
 
+export const fetchActionLogsApi = async () => {
+  try {
+    const response = await fetch(`${BASE_URL}/api/admin/alerts/action-logs`, {
+      headers: getAuthHeaders()
+    });
+    if (!response.ok) return [];
+    return response.json();
+  } catch {
+    return [];
+  }
+};
+
 /**
- * 알림 단건 해결 액션 기록
+ * 알림 단건 해결 액션 기록 (F18)
  */
-export const resolveAlertApi = async (alertId, actionDetail = '현장 조치 및 점검 완료', adminId = 1) => {
+export const resolveAlertApi = async (alertId, actionDetail = '현장 조치 및 점검 완료', adminId = null) => {
+  const effectiveAdminId = adminId ?? getCurrentUserId();
   const response = await fetch(`${BASE_URL}/api/admin/alerts/${alertId}/actions`, {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify({ actionDetail, adminId })
+    body: JSON.stringify({ actionDetail, adminId: effectiveAdminId })
   });
   if (!response.ok) throw new Error(`알림 처리 실패 (${response.status})`);
   return true;
 };
 
 /**
- * 알림 일괄 해결 액션
+ * 알림 일괄 해결 액션 (zoneIds / alertIds 스코프 지원) (F08, F18)
  */
-export const resolveAllAlertsApi = async (actionDetail = '관리자 일괄 확인 처리', adminId = 1) => {
+export const resolveAllAlertsApi = async (
+  actionDetail = '관리자 일괄 확인 처리',
+  adminId = null,
+  options = {}
+) => {
+  const effectiveAdminId = adminId ?? getCurrentUserId();
+  const payload = {
+    actionDetail,
+    adminId: effectiveAdminId,
+    ...(Array.isArray(options.zoneIds) && options.zoneIds.length > 0 ? { zoneIds: options.zoneIds } : {}),
+    ...(Array.isArray(options.alertIds) && options.alertIds.length > 0 ? { alertIds: options.alertIds } : {})
+  };
   const response = await fetch(`${BASE_URL}/api/admin/alerts/batch-actions`, {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify({ actionDetail, adminId })
+    body: JSON.stringify(payload)
   });
   if (!response.ok) throw new Error(`일괄 처리 실패 (${response.status})`);
   return true;
@@ -296,13 +394,14 @@ export const fetchCleaningRecordsApi = async (zoneId = null) => {
 };
 
 /**
- * 청소 이력 DB 저장
+ * 청소 이력 DB 저장 (F16)
  */
 export const createCleaningRecordApi = async (record) => {
+  const { id, ...cleanPayload } = record || {};
   const response = await fetch(`${BASE_URL}/api/admin/cleaning-records`, {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify(record)
+    body: JSON.stringify(cleanPayload)
   });
   if (!response.ok) throw new Error(`청소 기록 저장 실패 (${response.status})`);
   return response.json();
@@ -388,7 +487,7 @@ export const updateDeviceSetApi = async (deviceSetId, updateData) => {
 };
 
 /**
- * 기기 세트 삭제 API (DELETE)
+ * 기기 세트 삭제 API (DELETE) (F04)
  */
 export const deleteDeviceSetApi = async (deviceSetId) => {
   const response = await fetch(`${BASE_URL}/api/admin/device-sets/${deviceSetId}`, {
@@ -400,16 +499,16 @@ export const deleteDeviceSetApi = async (deviceSetId) => {
 };
 
 /**
- * 미화원 목록 조회 API
+ * 미화원 목록 조회 API (통신 오류 시 null 반환하여 시드 중복 생성 방지) (F15)
  */
 export const fetchWorkersApi = async (status = null) => {
   try {
     const url = `${BASE_URL}/api/admin/workers${status ? `?status=${status}` : ''}`;
     const response = await fetch(url, { headers: getAuthHeaders() });
-    if (!response.ok) return [];
+    if (!response.ok) return null;
     return response.json();
   } catch (e) {
-    return [];
+    return null;
   }
 };
 
@@ -423,6 +522,19 @@ export const createWorkerApi = async (workerData) => {
     body: JSON.stringify(workerData)
   });
   if (!response.ok) throw new Error(`미화원 등록 실패 (${response.status})`);
+  return response.json();
+};
+
+/**
+ * 미화원 정보 및 담당구역 수정 API (PUT /api/admin/workers/{id})
+ */
+export const updateWorkerApi = async (workerId, workerData) => {
+  const response = await fetch(`${BASE_URL}/api/admin/workers/${workerId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(workerData)
+  });
+  if (!response.ok) throw new Error(`청소관리인 정보 수정 실패 (${response.status})`);
   return response.json();
 };
 
@@ -467,10 +579,11 @@ export const fetchSystemSettingsApi = async () => {
 };
 
 /**
- * 중앙 시스템 운영 설정 갱신 API
+ * 중앙 시스템 운영 설정 갱신 API (F11, F18)
  */
-export const updateSystemSettingsApi = async (settingsMap, adminId = 1) => {
-  const response = await fetch(`${BASE_URL}/api/admin/settings?adminId=${adminId}`, {
+export const updateSystemSettingsApi = async (settingsMap, adminId = null) => {
+  const effectiveAdminId = adminId ?? getCurrentUserId();
+  const response = await fetch(`${BASE_URL}/api/admin/settings?adminId=${effectiveAdminId}`, {
     method: 'PUT',
     headers: getAuthHeaders(),
     body: JSON.stringify(settingsMap)
@@ -480,11 +593,12 @@ export const updateSystemSettingsApi = async (settingsMap, adminId = 1) => {
 };
 
 /**
- * 일일 청소 체크리스트 조회 API
+ * 일일 청소 체크리스트 조회 API (F09, F17)
  */
 export const fetchDailyChecklistApi = async (zoneId, date = '') => {
   try {
-    const url = `${BASE_URL}/api/admin/checklists?zoneId=${zoneId}${date ? `&date=${date}` : ''}`;
+    const targetDate = date || getKstDateString();
+    const url = `${BASE_URL}/api/admin/checklists?zoneId=${zoneId}&date=${encodeURIComponent(targetDate)}`;
     const response = await fetch(url, { headers: getAuthHeaders() });
     if (!response.ok) return [];
     return response.json();
@@ -494,16 +608,87 @@ export const fetchDailyChecklistApi = async (zoneId, date = '') => {
 };
 
 /**
- * 일일 청소 체크리스트 토글 API
+ * 일일 청소 체크리스트 토글 API (F09, F17, F18)
  */
 export const toggleDailyChecklistApi = async (payload) => {
+  const body = {
+    ...payload,
+    date: payload?.date || getKstDateString(),
+    completedBy: payload?.completedBy ?? getCurrentUserId()
+  };
   const response = await fetch(`${BASE_URL}/api/admin/checklists/toggle`, {
     method: 'POST',
     headers: getAuthHeaders(),
-    body: JSON.stringify(payload)
+    body: JSON.stringify(body)
   });
   if (!response.ok) throw new Error(`체크리스트 저장 실패 (${response.status})`);
   return response.json();
 };
+
+/**
+ * 일일 청소 체크리스트 일괄 저장 API (POST /api/admin/checklists/batch) (F09)
+ */
+export const batchUpdateDailyChecklistApi = async ({ zoneId, date = '', completedBy = null, items = {} }) => {
+  const response = await fetch(`${BASE_URL}/api/admin/checklists/batch`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify({
+      zoneId,
+      date: date || getKstDateString(),
+      completedBy: completedBy ?? getCurrentUserId(),
+      items
+    })
+  });
+  if (!response.ok) throw new Error(`체크리스트 일괄 저장 실패 (${response.status})`);
+  return response.json();
+};
+
+/**
+ * 계정(Users) 및 구역 권한(ZonePermissions) 관리 API (F07, F18)
+ */
+export const fetchUsersApi = async () => {
+  try {
+    const response = await fetch(`${BASE_URL}/api/admin/users`, {
+      headers: getAuthHeaders()
+    });
+    if (!response.ok) return [];
+    return response.json();
+  } catch {
+    return [];
+  }
+};
+
+export const createUserApi = async (userData) => {
+  const response = await fetch(`${BASE_URL}/api/admin/users`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(userData)
+  });
+  if (!response.ok) {
+    const err = await response.text().catch(() => '');
+    throw new Error(`계정 생성 실패 (${response.status}): ${err}`);
+  }
+  return response.json();
+};
+
+export const updateUserApi = async (userId, userData) => {
+  const response = await fetch(`${BASE_URL}/api/admin/users/${userId}`, {
+    method: 'PUT',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(userData)
+  });
+  if (!response.ok) throw new Error(`계정 수정 실패 (${response.status})`);
+  return response.json();
+};
+
+export const deleteUserApi = async (userId) => {
+  const response = await fetch(`${BASE_URL}/api/admin/users/${userId}`, {
+    method: 'DELETE',
+    headers: getAuthHeaders()
+  });
+  if (!response.ok) throw new Error(`계정 삭제 실패 (${response.status})`);
+  return true;
+};
+
 
 

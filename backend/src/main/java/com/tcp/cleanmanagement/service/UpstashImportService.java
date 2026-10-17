@@ -20,6 +20,7 @@ public class UpstashImportService {
     private final UpstashImportedSampleRepository sampleRepository;
     private final ZoneRepository zoneRepository;
     private final SensorRepository sensorRepository;
+    private final DeviceSetRepository deviceSetRepository;
     private final IotDataService iotDataService;
     private final JsonMapper jsonMapper;
 
@@ -30,6 +31,43 @@ public class UpstashImportService {
 
     private UpstashDevice device(String mac) {
         return deviceRepository.findLockedByMac(mac).orElseGet(() -> {
+            var existingSetOpt = deviceSetRepository.findByMacAddress(mac);
+            if (existingSetOpt.isPresent()) {
+                DeviceSet set = existingSetOpt.get();
+                Zone zone = set.getZone();
+                if (zone == null) {
+                    zone = zoneRepository.save(Zone.builder()
+                            .name(set.getSetCode() != null ? set.getSetCode() : ("ESP32 " + mac))
+                            .zoneType(ZoneType.TOILET)
+                            .isOurSolution(true)
+                            .build());
+                    set.setZone(zone);
+                    deviceSetRepository.save(set);
+                }
+                List<Sensor> setSensors = sensorRepository.findByDeviceSetIdOrderByIdAsc(set.getId());
+                final Zone targetZone = zone;
+                Sensor temperature = setSensors.stream()
+                        .filter(s -> s.getSensorType() == SensorType.TEMP_HUMID)
+                        .findFirst()
+                        .orElseGet(() -> sensorRepository.save(Sensor.builder()
+                                .zone(targetZone).deviceSet(set)
+                                .sensorType(SensorType.TEMP_HUMID).sensorModel(SensorModel.DHT22)
+                                .status(SensorStatus.ACTIVE).build()));
+                Sensor gas = setSensors.stream()
+                        .filter(s -> s.getSensorType() == SensorType.GAS)
+                        .findFirst()
+                        .orElseGet(() -> sensorRepository.save(Sensor.builder()
+                                .zone(targetZone).deviceSet(set)
+                                .sensorType(SensorType.GAS).sensorModel(SensorModel.MQ135)
+                                .status(SensorStatus.ACTIVE).build()));
+                return deviceRepository.save(UpstashDevice.builder()
+                        .macAddress(mac)
+                        .zone(targetZone)
+                        .temperatureHumiditySensor(temperature)
+                        .gasSensor(gas)
+                        .build());
+            }
+
             Zone zone = zoneRepository.save(Zone.builder().name("ESP32 " + mac)
                     .zoneType(ZoneType.TOILET).isOurSolution(true).build());
             Sensor temperature = sensorRepository.save(Sensor.builder().zone(zone)

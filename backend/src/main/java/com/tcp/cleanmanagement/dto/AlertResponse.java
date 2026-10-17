@@ -1,4 +1,5 @@
 package com.tcp.cleanmanagement.dto;
+import com.tcp.cleanmanagement.enums.AlertStatus;
 import com.tcp.cleanmanagement.enums.AlertType;
 import com.tcp.cleanmanagement.enums.SensorModel;
 import lombok.Builder;
@@ -18,6 +19,10 @@ public class AlertResponse {
     private String setCode;
     private String installationLabel;
     private AlertType alertType;
+    private AlertStatus status;
     private String message;
     private LocalDateTime createdAt;
+    private LocalDateTime resolvedAt;
+    private String actionDetail;
+    private String resolvedBy;
 }

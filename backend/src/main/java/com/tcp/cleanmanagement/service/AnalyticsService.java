@@ -5,6 +5,7 @@ import com.tcp.cleanmanagement.entity.DeviceSetHistory;
 import com.tcp.cleanmanagement.entity.Sensor;
 import com.tcp.cleanmanagement.entity.SensorDataRaw;
 import com.tcp.cleanmanagement.entity.SensorMetric;
+import com.tcp.cleanmanagement.entity.SystemSetting;
 import com.tcp.cleanmanagement.entity.Zone;
 import com.tcp.cleanmanagement.enums.AlertStatus;
 import com.tcp.cleanmanagement.enums.AlertType;
@@ -12,6 +13,7 @@ import com.tcp.cleanmanagement.enums.MetricCode;
 import com.tcp.cleanmanagement.event.SensorDataSavedEvent;
 import com.tcp.cleanmanagement.repository.AlertRepository;
 import com.tcp.cleanmanagement.repository.SensorDataRawRepository;
+import com.tcp.cleanmanagement.repository.SystemSettingRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
@@ -29,6 +31,7 @@ import java.math.BigDecimal;
 public class AnalyticsService {
     private final SensorDataRawRepository dataRepository;
     private final AlertRepository alertRepository;
+    private final SystemSettingRepository systemSettingRepository;
 
     @Async
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -38,8 +41,6 @@ public class AnalyticsService {
         if (currentData == null) return;
         SensorMetric metric = currentData.getMetric();
         Sensor sensor = metric.getSensor();
-        // Async processing may run after an installation has moved. Use the
-        // configuration recorded when this reading was accepted.
         Zone zone = currentData.getDeviceSetHistory() == null ? sensor.getZone()
                 : currentData.getDeviceSetHistory().getZone();
 
@@ -52,13 +53,34 @@ public class AnalyticsService {
         }
     }
 
+    private BigDecimal settingDecimal(String key, BigDecimal fallback) {
+        try {
+            return systemSettingRepository.findById(key)
+                    .map(SystemSetting::getSettingValue)
+                    .map(BigDecimal::new)
+                    .orElse(fallback);
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
     private void analyzeGasData(SensorDataRaw currentData, SensorMetric metric, Sensor sensor, Zone zone) {
-        if ("UNVERIFIED".equals(metric.getUnitCode()) || metric.getPleasantThreshold() == null) return;
         BigDecimal currentValue = currentData.getMeasuredValue();
-        BigDecimal threshold = metric.getPleasantThreshold().multiply(new BigDecimal("1.5"));
+        BigDecimal threshold;
+        if (metric.getNeedsVentilationThreshold() != null) {
+            threshold = metric.getNeedsVentilationThreshold();
+        } else if (metric.getPleasantThreshold() != null) {
+            threshold = metric.getPleasantThreshold().multiply(new BigDecimal("1.5"));
+        } else if (zone.getNeedsVentilationThreshold() != null) {
+            threshold = BigDecimal.valueOf(zone.getNeedsVentilationThreshold());
+        } else if (zone.getPleasantThreshold() != null) {
+            threshold = BigDecimal.valueOf(zone.getPleasantThreshold()).multiply(new BigDecimal("1.5"));
+        } else {
+            threshold = settingDecimal("gas_danger_threshold", new BigDecimal("700"));
+        }
 
         if (currentValue.compareTo(threshold) > 0) {
-            log.info("Smoking anomaly detected in Zone: {}", zone.getName());
+            log.info("Smoking/gas anomaly detected in Zone: {}", zone.getName());
             createAlert(zone, sensor, currentData.getDeviceSetHistory(), AlertType.SMOKING,
                     "유해가스 농도 급상승 감지 (흡연/역류 의심). 수치: " + currentValue);
         }

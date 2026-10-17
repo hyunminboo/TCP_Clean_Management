@@ -1,11 +1,14 @@
 package com.tcp.cleanmanagement.job;
 
 import com.tcp.cleanmanagement.entity.SensorDataAggregated;
+import com.tcp.cleanmanagement.entity.SystemSetting;
 import com.tcp.cleanmanagement.enums.AggregationGranularity;
 import com.tcp.cleanmanagement.repository.AggregationResult;
 import com.tcp.cleanmanagement.repository.SensorDataAggregatedRepository;
 import com.tcp.cleanmanagement.repository.SensorDataRawRepository;
 import com.tcp.cleanmanagement.repository.SensorMetricRepository;
+import com.tcp.cleanmanagement.repository.SystemSettingRepository;
+import com.tcp.cleanmanagement.repository.UpstashImportedSampleRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -26,6 +29,8 @@ public class DataAggregationJob {
     private final SensorDataRawRepository rawRepository;
     private final SensorDataAggregatedRepository aggregatedRepository;
     private final SensorMetricRepository metricRepository;
+    private final SystemSettingRepository systemSettingRepository;
+    private final UpstashImportedSampleRepository upstashImportedSampleRepository;
 
     @Scheduled(cron = "0 0 * * * *", zone = "UTC")
     @Transactional
@@ -68,8 +73,19 @@ public class DataAggregationJob {
     @Scheduled(cron = "0 0 2 * * *", zone = "UTC")
     @Transactional
     public void cleanupOldRawData() {
-        LocalDateTime cutoff = LocalDateTime.now(ZoneOffset.UTC).minusDays(7);
-        int deleted = rawRepository.deleteOlderThan(cutoff);
-        log.info("Deleted {} raw readings older than {}", deleted, cutoff);
+        int retentionDays = 30;
+        try {
+            retentionDays = systemSettingRepository.findById("retention_days")
+                    .map(SystemSetting::getSettingValue)
+                    .map(Integer::parseInt)
+                    .filter(d -> d >= 1 && d <= 3650)
+                    .orElse(30);
+        } catch (Exception ignored) {
+        }
+        LocalDateTime cutoff = LocalDateTime.now(ZoneOffset.UTC).minusDays(retentionDays);
+        int deletedRaw = rawRepository.deleteOlderThan(cutoff);
+        int deletedSamples = upstashImportedSampleRepository.deleteOlderThan(cutoff);
+        log.info("Deleted {} raw readings and {} imported samples older than {} (retention_days={})",
+                deletedRaw, deletedSamples, cutoff, retentionDays);
     }
 }

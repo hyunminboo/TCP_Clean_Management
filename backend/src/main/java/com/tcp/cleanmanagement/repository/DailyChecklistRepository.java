@@ -9,4 +9,5 @@ import java.util.Optional;
 public interface DailyChecklistRepository extends JpaRepository<DailyChecklist, Long> {
     List<DailyChecklist> findByZoneIdAndCheckDate(Long zoneId, LocalDate checkDate);
     Optional<DailyChecklist> findByZoneIdAndCheckDateAndItemKey(Long zoneId, LocalDate checkDate, String itemKey);
+    void deleteByZoneId(Long zoneId);
 }

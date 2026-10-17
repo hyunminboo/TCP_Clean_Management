@@ -26,7 +26,17 @@ public class CleaningRecordController {
 
     @PostMapping
     public ResponseEntity<CleaningRecord> create(@RequestBody CleaningRecord record) {
+        record.setId(null);
         CleaningRecord saved = cleaningRecordRepository.save(record);
         return ResponseEntity.status(HttpStatus.CREATED).body(saved);
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<Void> delete(@PathVariable Long id) {
+        if (cleaningRecordRepository.existsById(id)) {
+            cleaningRecordRepository.deleteById(id);
+            return ResponseEntity.noContent().build();
+        }
+        return ResponseEntity.notFound().build();
     }
 }

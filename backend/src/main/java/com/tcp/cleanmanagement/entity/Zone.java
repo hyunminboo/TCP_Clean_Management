@@ -28,6 +28,10 @@ public class Zone {
     private Float pleasantThreshold;
     private Float needsVentilationThreshold;
 
+    private Long assignedWorkerId;
+    @Column(length = 50)
+    private String assignedWorkerName;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

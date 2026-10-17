@@ -175,8 +175,9 @@ public class DeviceSetService {
             sensor.setDeviceSet(null);
             sensorRepository.save(sensor);
         }
-        historyRepository.findByDeviceSetIdOrderByIdDesc(deviceSetId)
-                .forEach(historyRepository::delete);
+        rawRepository.unlinkByDeviceSetId(deviceSetId);
+        alertRepository.unlinkHistoryByDeviceSetId(deviceSetId);
+        historyRepository.deleteByDeviceSetId(deviceSetId);
         deviceSetRepository.delete(set);
     }
 
