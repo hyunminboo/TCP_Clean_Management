@@ -25,6 +25,7 @@ import {
   deleteBackendSensorApi,
   fetchDeviceSetsApi,
   fetchDeviceSetHistoryApi,
+  createDeviceSetApi,
   updateDeviceSetApi,
   deleteDeviceSetApi,
   fetchWorkersApi,
@@ -2096,6 +2097,12 @@ export default function AdminPage() {
 
   // 화장실(Zone) 정보 수정 모달 열기 (PUT /api/dev/zones/{id} 연결 - F02)
   const handleOpenEditZone = (restroom) => {
+    const matchingSet = (deviceSets || []).find(ds => 
+      (restroom.macAddress && ds.macAddress?.toLowerCase() === restroom.macAddress?.toLowerCase()) ||
+      Number(ds.zoneId) === Number(restroom.id)
+    );
+    const existingMac = matchingSet?.macAddress || (restroom.macAddress && !restroom.macAddress.startsWith('ZONE-') ? restroom.macAddress : '');
+
     setEditingZone({
       id: restroom.id,
       name: restroom.name || '',
@@ -2109,7 +2116,10 @@ export default function AdminPage() {
       zoneType: restroom.zoneType || 'TOILET',
       pleasantThreshold: restroom.pleasantThreshold ?? thresholds.gasWarn ?? 300,
       needsVentilationThreshold: restroom.needsVentilationThreshold ?? thresholds.gasDanger ?? 600,
-      assignedWorkerId: restroom.assignedWorkerId != null ? String(restroom.assignedWorkerId) : ''
+      assignedWorkerId: restroom.assignedWorkerId != null ? String(restroom.assignedWorkerId) : '',
+      deviceSetId: matchingSet?.deviceSetId || null,
+      macAddress: existingMac,
+      originalMacAddress: existingMac
     });
     setGpsStatusMsg('');
     setIsEditZoneModalOpen(true);
@@ -2138,9 +2148,43 @@ export default function AdminPage() {
       if (selectedWorker) {
         await assignZoneWorkerApi(editingZone.id, selectedWorker.id, selectedWorker.name).catch(() => {});
       }
+
+      // 만약 ESP32 MAC 주소가 입력되었거나 변경된 경우 기기 세트 동기화
+      const mac = editingZone.macAddress?.trim();
+      if (mac && mac !== editingZone.originalMacAddress) {
+        const macPattern = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+        if (!macPattern.test(mac)) {
+          showToast('유효한 MAC 주소 형식(예: 24:DC:C3:99:AA:01)을 입력해주세요.');
+          setDataLoading(false);
+          return;
+        }
+        const normalizedMac = mac.toUpperCase().replace(/-/g, ':');
+        try {
+          if (editingZone.deviceSetId) {
+            await updateDeviceSetApi(editingZone.deviceSetId, {
+              zoneId: Number(editingZone.id),
+              macAddress: normalizedMac,
+              installationLabel: editingZone.name.trim()
+            });
+          } else {
+            await createDeviceSetApi({
+              setCode: `SET-${editingZone.id}`,
+              macAddress: normalizedMac,
+              zoneId: Number(editingZone.id),
+              installationLabel: editingZone.name.trim()
+            });
+          }
+          const sets = await fetchDeviceSetsApi().catch(() => null);
+          if (sets) setDeviceSets(sets);
+        } catch (dsErr) {
+          console.warn('기기 세트 MAC 업데이트 실패:', dsErr);
+          showToast(`기기 MAC 주소 변경 실패: ${dsErr.message}`);
+        }
+      }
+
       setIsEditZoneModalOpen(false);
       setEditingZone(null);
-      showToast(`[${editingZone.name}] 시설 정보가 DB(MySQL)에 수정되었습니다.`);
+      showToast(`[${editingZone.name}] 시설 정보 및 기기 설정이 DB에 반영되었습니다.`);
       await handleManualRefresh();
     } catch (err) {
       console.error('시설 수정 오류:', err);
@@ -2150,21 +2194,18 @@ export default function AdminPage() {
     }
   };
 
-  // 기기 세트 수정 열기 (화장실 목록에서 호출 - deviceSets[0] 오작동 폴백 제거 F02)
+  // 기기 세트 수정 열기 (화장실 목록에서 호출)
   const handleOpenEditDeviceSet = (restroom) => {
-    const matchingSet = deviceSets.find(ds => 
+    const matchingSet = (deviceSets || []).find(ds => 
       (restroom.macAddress && ds.macAddress?.toLowerCase() === restroom.macAddress?.toLowerCase()) ||
       Number(ds.zoneId) === Number(restroom.id)
     );
-    if (!matchingSet) {
-      showToast('이 구역에 연결된 기기 세트가 없습니다. 시스템 환경 설정에서 기기 세트를 먼저 확인해주세요.');
-      return;
-    }
     setEditingDeviceSet({
-      id: matchingSet.deviceSetId,
-      label: matchingSet.installationLabel || restroom.name,
-      zoneId: matchingSet.zoneId || restroom.id,
-      macAddress: matchingSet.macAddress || restroom.macAddress
+      id: matchingSet ? matchingSet.deviceSetId : null,
+      label: matchingSet?.installationLabel || restroom.name,
+      zoneId: matchingSet?.zoneId || restroom.id,
+      macAddress: matchingSet?.macAddress || (restroom.macAddress && !restroom.macAddress.startsWith('ZONE-') ? restroom.macAddress : ''),
+      isNew: !matchingSet
     });
     setIsEditDeviceSetModalOpen(true);
   };
@@ -2175,29 +2216,54 @@ export default function AdminPage() {
       id: ds.deviceSetId,
       label: ds.installationLabel || ds.setCode,
       zoneId: ds.zoneId,
-      macAddress: ds.macAddress
+      macAddress: ds.macAddress,
+      isNew: false
     });
     setIsEditDeviceSetModalOpen(true);
   };
 
-  // 기기 세트 수정 저장 (PATCH /api/admin/device-sets/{id})
+  // 기기 세트 수정 저장 (PATCH /api/admin/device-sets/{id} 또는 신규 등록)
   const handleSaveEditDeviceSet = async () => {
     if (!editingDeviceSet) return;
+    const mac = editingDeviceSet.macAddress?.trim();
+    if (!mac) {
+      showToast('ESP32 MAC 주소를 입력해주세요.');
+      return;
+    }
+    const macPattern = /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/;
+    if (!macPattern.test(mac)) {
+      showToast('유효한 MAC 주소 형식(예: 24:DC:C3:99:AA:01)을 입력해주세요.');
+      return;
+    }
+    const normalizedMac = mac.toUpperCase().replace(/-/g, ':');
+    const targetZoneId = Number(editingDeviceSet.zoneId);
+
     try {
       setDataLoading(true);
-      await updateDeviceSetApi(editingDeviceSet.id, {
-        zoneId: Number(editingDeviceSet.zoneId),
-        installationLabel: editingDeviceSet.label,
-        macAddress: editingDeviceSet.macAddress
-      });
-      showToast('기기 세트 정보 및 설치 구역이 DB에 수정되었습니다.');
+      if (editingDeviceSet.id) {
+        await updateDeviceSetApi(editingDeviceSet.id, {
+          zoneId: targetZoneId,
+          installationLabel: editingDeviceSet.label?.trim() || `Zone #${targetZoneId} 세트`,
+          macAddress: normalizedMac
+        });
+        showToast('아두이노 기기 위치(구역) 및 MAC 주소가 DB에 수정되었습니다.');
+      } else {
+        await createDeviceSetApi({
+          setCode: `SET-${targetZoneId}`,
+          macAddress: normalizedMac,
+          zoneId: targetZoneId,
+          installationLabel: editingDeviceSet.label?.trim() || `Zone #${targetZoneId} 세트`
+        });
+        showToast('신규 아두이노 기기 매핑이 DB에 등록되었습니다.');
+      }
       setIsEditDeviceSetModalOpen(false);
-      const sets = await fetchDeviceSetsApi();
-      setDeviceSets(sets);
+      setEditingDeviceSet(null);
+      const sets = await fetchDeviceSetsApi().catch(() => null);
+      if (sets) setDeviceSets(sets);
       await handleManualRefresh();
     } catch (err) {
       console.error('기기 수정 실패:', err);
-      showToast('기기 수정 실패: ' + err.message);
+      showToast('기기 정보 수정 실패: ' + err.message);
     } finally {
       setDataLoading(false);
     }
@@ -4648,7 +4714,27 @@ export default function AdminPage() {
                           <td style={{ ...styles.td, fontWeight: '600', whiteSpace: 'nowrap' }}>{r.name}</td>
                           <td style={{ ...styles.td, whiteSpace: 'nowrap' }}>{r.floor}</td>
                           <td style={{ ...styles.td, whiteSpace: 'nowrap' }}>{genderLabel(r.gender)}</td>
-                          <td style={{ ...styles.td, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>{r.deviceId}</td>
+                          <td style={{ ...styles.td, fontFamily: 'monospace', whiteSpace: 'nowrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <span>{r.deviceId}</span>
+                              <button
+                                onClick={() => handleOpenEditDeviceSet(r)}
+                                title="아두이노 기기(ESP32 MAC) 변경 또는 설치 위치(구역) 이동"
+                                style={{
+                                  padding: '2px 6px',
+                                  fontSize: '10px',
+                                  color: '#2563eb',
+                                  backgroundColor: '#eff6ff',
+                                  border: '1px solid #bfdbfe',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  fontWeight: '600'
+                                }}
+                              >
+                                변경
+                              </button>
+                            </div>
+                          </td>
                           <td style={{ ...styles.td, whiteSpace: 'nowrap' }}>
                             <span style={{
                               ...styles.statusPillSmall,
@@ -4677,6 +4763,18 @@ export default function AdminPage() {
                                 }}
                               >
                                 수정
+                              </button>
+                              <button
+                                onClick={() => handleOpenEditDeviceSet(r)}
+                                style={{
+                                  ...styles.actionBtnSmall,
+                                  color: '#059669',
+                                  borderColor: '#bbf7d0',
+                                  backgroundColor: '#f0fdf4'
+                                }}
+                                title="설치된 아두이노 보드(MAC) 교체 또는 다른 구역으로 위치 이전"
+                              >
+                                기기 변경
                               </button>
                               <button
                                 onClick={() => handleOpenDeviceSetHistory(r)}
@@ -5921,6 +6019,46 @@ export default function AdminPage() {
                   style={{ ...styles.formInput, height: '60px', resize: 'none' }}
                 />
               </div>
+              <div style={styles.formGroup}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                  <label style={styles.formLabel}>설치된 아두이노(ESP32) MAC 주소 (기기 ID)</label>
+                  {discoveredDevices && discoveredDevices.length > 0 && (
+                    <span style={{ fontSize: '11px', color: '#b45309', fontWeight: '600' }}>
+                      📡 감지된 새 기기 {discoveredDevices.length}대 있음
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    placeholder="예: 24:DC:C3:99:AA:01 (ESP32 MAC 주소)"
+                    value={editingZone.macAddress || ''}
+                    onChange={e => setEditingZone({ ...editingZone, macAddress: e.target.value })}
+                    style={{ ...styles.formInput, fontFamily: 'monospace', flex: 1 }}
+                  />
+                  {discoveredDevices && discoveredDevices.length > 0 && (
+                    <select
+                      style={{ ...styles.formSelect, width: 'auto', maxWidth: '210px', fontSize: '11px' }}
+                      onChange={e => {
+                        if (e.target.value) {
+                          setEditingZone({ ...editingZone, macAddress: e.target.value });
+                        }
+                      }}
+                      value=""
+                    >
+                      <option value="">-- 감지된 기기 선택 --</option>
+                      {discoveredDevices.map(d => (
+                        <option key={d.macAddress} value={d.macAddress}>
+                          {d.macAddress} {d.latitude ? '📍' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                <span style={{ fontSize: '11px', color: '#64748b', marginTop: '3px', display: 'block' }}>
+                  아두이노 보드를 교체했거나 새로 연결할 때 변경할 MAC 주소를 입력하세요.
+                </span>
+              </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px', marginBottom: '6px', flexWrap: 'wrap', gap: '6px' }}>
                 <label style={styles.formLabel}>설치 위치 좌표 설정</label>
                 <div style={{ display: 'flex', gap: '6px' }}>
@@ -5995,49 +6133,93 @@ export default function AdminPage() {
         </div>
       )}
 
-      {/* 2. 기기 세트 수정 모달 (PATCH /api/admin/device-sets/{id}) */}
+      {/* 2. 기기 세트 수정 모달 (PATCH /api/admin/device-sets/{id} 또는 신규 등록) */}
       {isEditDeviceSetModalOpen && editingDeviceSet && (
         <div style={styles.modalOverlay} onClick={() => setIsEditDeviceSetModalOpen(false)}>
           <div style={styles.modalContent} onClick={e => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <h3 style={{ margin: 0, fontSize: '14px', fontWeight: '600' }}>기기 세트 정보 및 구역 수정</h3>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '15px', fontWeight: '700', color: '#0f172a' }}>
+                  {editingDeviceSet.id ? '아두이노 설치 위치(구역) 및 ESP32 MAC 주소 변경' : '신규 아두이노 기기(ESP32) 매핑 등록'}
+                </h3>
+                <span style={{ fontSize: '11px', color: '#64748b' }}>
+                  설치한 아두이노의 화장실 위치를 다른 구역으로 이동하거나, 보드 교체 시 새로운 ESP32 MAC 주소를 지정합니다.
+                </span>
+              </div>
               <button onClick={() => setIsEditDeviceSetModalOpen(false)} style={styles.modalClose}>&times;</button>
             </div>
             <div style={styles.modalBody}>
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>설치 라벨 명칭</label>
-                <input
-                  type="text"
-                  value={editingDeviceSet.label}
-                  onChange={e => setEditingDeviceSet({ ...editingDeviceSet, label: e.target.value })}
-                  style={styles.formInput}
-                />
-              </div>
-              <div style={styles.formGroup}>
-                <label style={styles.formLabel}>배치 관제 구역 (Zone)</label>
+                <label style={styles.formLabel}>설치 화장실 / 관제 구역 (위치 변경)</label>
                 <select
                   value={editingDeviceSet.zoneId}
                   onChange={e => setEditingDeviceSet({ ...editingDeviceSet, zoneId: e.target.value })}
                   style={styles.formSelect}
                 >
                   {accessibleRestrooms.map(r => (
-                    <option key={r.id} value={r.id}>{r.name} ({r.floor})</option>
+                    <option key={r.id} value={r.id}>{r.name} ({r.floor}) - 구역 #{r.id}</option>
                   ))}
                 </select>
+                <span style={{ fontSize: '11px', color: '#64748b', marginTop: '2px', display: 'block' }}>
+                  다른 화장실로 기기를 이전 설치했을 때 이 목록에서 이동할 구역을 선택하세요.
+                </span>
               </div>
               <div style={styles.formGroup}>
-                <label style={styles.formLabel}>ESP32 MAC 주소</label>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                  <label style={styles.formLabel}>ESP32 MAC 주소 (아두이노 기기 ID 변경)</label>
+                  {discoveredDevices && discoveredDevices.length > 0 && (
+                    <span style={{ fontSize: '11px', color: '#b45309', fontWeight: '600' }}>
+                      📡 감지된 새 기기 {discoveredDevices.length}대 있음
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <input
+                    type="text"
+                    placeholder="예: 24:DC:C3:99:AA:01"
+                    value={editingDeviceSet.macAddress || ''}
+                    onChange={e => setEditingDeviceSet({ ...editingDeviceSet, macAddress: e.target.value })}
+                    style={{ ...styles.formInput, fontFamily: 'monospace', flex: 1 }}
+                  />
+                  {discoveredDevices && discoveredDevices.length > 0 && (
+                    <select
+                      style={{ ...styles.formSelect, width: 'auto', maxWidth: '210px', fontSize: '11px' }}
+                      onChange={e => {
+                        if (e.target.value) {
+                          setEditingDeviceSet({ ...editingDeviceSet, macAddress: e.target.value });
+                        }
+                      }}
+                      value=""
+                    >
+                      <option value="">-- 감지된 기기 선택 --</option>
+                      {discoveredDevices.map(d => (
+                        <option key={d.macAddress} value={d.macAddress}>
+                          {d.macAddress} {d.latitude ? '📍' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+                <span style={{ fontSize: '11px', color: '#64748b', marginTop: '3px', display: 'block' }}>
+                  보드가 고장나 교체했거나 주소를 변경할 때 새 ESP32 MAC 주소를 입력하세요.
+                </span>
+              </div>
+              <div style={styles.formGroup}>
+                <label style={styles.formLabel}>설치 라벨 명칭</label>
                 <input
                   type="text"
-                  value={editingDeviceSet.macAddress}
-                  onChange={e => setEditingDeviceSet({ ...editingDeviceSet, macAddress: e.target.value })}
-                  style={{ ...styles.formInput, fontFamily: 'monospace' }}
+                  placeholder="예: 1F 남자 화장실 메인 센서"
+                  value={editingDeviceSet.label}
+                  onChange={e => setEditingDeviceSet({ ...editingDeviceSet, label: e.target.value })}
+                  style={styles.formInput}
                 />
               </div>
             </div>
             <div style={styles.modalFooter}>
               <button onClick={() => setIsEditDeviceSetModalOpen(false)} style={styles.secondaryBtn}>취소</button>
-              <button onClick={handleSaveEditDeviceSet} style={styles.primaryBtn}>수정 사항 저장</button>
+              <button onClick={handleSaveEditDeviceSet} style={styles.primaryBtn}>
+                {editingDeviceSet.id ? '위치 / MAC 주소 수정 저장' : '기기 매핑 등록 완료'}
+              </button>
             </div>
           </div>
         </div>
