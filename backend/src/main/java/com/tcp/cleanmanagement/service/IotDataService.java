@@ -3,14 +3,12 @@ package com.tcp.cleanmanagement.service;
 import com.tcp.cleanmanagement.dto.DeviceSetResponse;
 import com.tcp.cleanmanagement.dto.SensorDataRequest;
 import com.tcp.cleanmanagement.entity.DeviceSet;
-import com.tcp.cleanmanagement.entity.Zone;
 import com.tcp.cleanmanagement.entity.Sensor;
 import com.tcp.cleanmanagement.entity.SensorDataRaw;
 import com.tcp.cleanmanagement.entity.SensorMetric;
 import com.tcp.cleanmanagement.entity.DeviceSetHistory;
 import com.tcp.cleanmanagement.enums.MetricCode;
 import com.tcp.cleanmanagement.enums.SensorModel;
-import com.tcp.cleanmanagement.enums.SensorStatus;
 import com.tcp.cleanmanagement.enums.SensorType;
 import com.tcp.cleanmanagement.enums.TimeSource;
 import com.tcp.cleanmanagement.event.SensorDataSavedEvent;
@@ -31,7 +29,6 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.HashSet;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,21 +46,14 @@ public class IotDataService {
     private final UpstashDeviceRepository upstashDeviceRepository;
     private final DeviceSetHistoryRepository historyRepository;
     private final DeviceSetRepository deviceSetRepository;
-    private final DiscoveredDeviceService discoveredDeviceService;
 
     @Transactional(readOnly = true)
     public DeviceSetResponse getDeviceSetByMac(String mac) {
-        return getDeviceSetByMac(mac, null);
-    }
-
-    @Transactional(readOnly = true)
-    public DeviceSetResponse getDeviceSetByMac(String mac, String clientIp) {
         String normalizedMac = (mac != null && mac.matches("[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}"))
                 ? mac.toUpperCase(Locale.ROOT) : (mac != null ? mac.trim() : "");
         if (!normalizedMac.isEmpty() && deviceSetRepository != null) {
             Optional<DeviceSet> registeredSet = deviceSetRepository.findByMacAddress(normalizedMac);
             if (registeredSet.isPresent()) {
-                discoveredDeviceService.removeDevice(normalizedMac);
                 DeviceSet set = registeredSet.get();
                 Map<String, Long> ids = new HashMap<>();
                 int gasCount = 0;
@@ -98,27 +88,25 @@ public class IotDataService {
 
             var registered = upstashDeviceRepository.findById(normalizedMac);
             if (registered.isPresent()) {
-                discoveredDeviceService.removeDevice(normalizedMac);
                 var device = registered.get();
                 Map<String, Long> ids = new HashMap<>();
                 ids.put("DHT11", device.getTemperatureHumiditySensor().getId());
                 ids.put("DHT22", device.getTemperatureHumiditySensor().getId());
                 ids.put("MQ135", device.getGasSensor().getId());
+                if(device.getMq7Sensor()!=null) ids.put("MQ7",device.getMq7Sensor().getId());
                 return DeviceSetResponse.builder().macAddress(device.getMacAddress())
                         .setCode("ESP32_" + device.getMacAddress().replace(":", ""))
                         .sensorIds(ids).build();
             }
-
-            // 미등록 기기: 감지 목록에 기록하고 404를 반환하여 데이터 오염 방지
-            discoveredDeviceService.recordDiscovery(normalizedMac, clientIp);
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Unregistered ESP32 device: " + normalizedMac);
         }
-
-        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "MAC address is required");
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Register this ESP32 MAC address first");
     }
 
     @Transactional
-    public void saveSensorData(Long sensorId, SensorDataRequest request) {
+    public void saveSensorData(Long sensorId, SensorDataRequest request) { saveSensorData(sensorId,request,"sensor_api"); }
+
+    @Transactional
+    public void saveSensorData(Long sensorId, SensorDataRequest request,String source) {
         Sensor sensor = sensorRepository.findByIdForUpdate(sensorId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Sensor not found"));
         if (request == null || request.getSampleKey() == null || request.getReadings() == null
@@ -139,6 +127,10 @@ public class IotDataService {
             }
         }
 
+        if(sensor.getStatus()!=com.tcp.cleanmanagement.enums.SensorStatus.ACTIVE || sensor.getZone()!=null && Boolean.FALSE.equals(sensor.getZone().getIsActive()))
+            throw new ResponseStatusException(HttpStatus.CONFLICT,"Sensor or zone is inactive");
+        if(request.getMeasuredAt()!=null && (request.getMeasuredAt().getYear()<1970 || request.getMeasuredAt().toInstant().isAfter(java.time.Instant.now().plusSeconds(300))))
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Measurement time is in the future");
         Set<MetricCode> allowed = switch (sensor.getSensorType()) {
             case GAS -> Set.of(MetricCode.GAS);
             case TEMP_HUMID -> Set.of(MetricCode.TEMPERATURE, MetricCode.HUMIDITY);
@@ -150,6 +142,9 @@ public class IotDataService {
                     || !seen.add(reading.getMetricCode())) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid or duplicate metric for sensor type");
             }
+            if ((reading.getMetricCode()==MetricCode.GAS && (reading.getMeasuredValue().signum()<0 || reading.getMeasuredValue().compareTo(BigDecimal.valueOf(4095))>0))
+                    || (reading.getMetricCode()==MetricCode.TEMPERATURE && (reading.getMeasuredValue().compareTo(BigDecimal.valueOf(-40))<0 || reading.getMeasuredValue().compareTo(BigDecimal.valueOf(80))>0)))
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,"Reading outside sensor range");
             if (reading.getMetricCode() == MetricCode.HUMIDITY
                     && (reading.getMeasuredValue().signum() < 0
                     || reading.getMeasuredValue().compareTo(BigDecimal.valueOf(100)) > 0)) {
@@ -162,12 +157,24 @@ public class IotDataService {
             }
         }
 
-        LocalDateTime receivedAt = LocalDateTime.now(ZoneOffset.UTC);
+        LocalDateTime receivedAt = databaseTime(LocalDateTime.now(ZoneOffset.UTC));
         LocalDateTime measuredAt = request.getMeasuredAt() == null
-                ? receivedAt : request.getMeasuredAt().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime();
+                ? receivedAt : databaseTime(request.getMeasuredAt().withOffsetSameInstant(ZoneOffset.UTC).toLocalDateTime());
         TimeSource timeSource = request.getMeasuredAt() == null ? TimeSource.SERVER : TimeSource.DEVICE;
         DeviceSetHistory history = sensor.getDeviceSet() == null ? null : historyRepository
                 .findFirstByDeviceSetIdOrderByIdDesc(sensor.getDeviceSet().getId()).orElse(null);
+
+        if(sensor.getDeviceSet()!=null && request.getMeasuredAt()!=null) {
+            var installation=historyRepository.findByDeviceSetIdOrderByIdDesc(sensor.getDeviceSet().getId());
+            LocalDateTime currentSince=null;boolean previousBinding=false;
+            for(var item:installation) {
+                if(!item.getZone().getId().equals(sensor.getZone().getId()) ||
+                    !item.getMacAddress().equalsIgnoreCase(sensor.getDeviceSet().getMacAddress())) {previousBinding=true;break;}
+                currentSince=item.getChangedAt();
+            }
+            if(previousBinding && currentSince!=null && measuredAt.isBefore(currentSince.truncatedTo(java.time.temporal.ChronoUnit.SECONDS)))
+                throw new ResponseStatusException(HttpStatus.CONFLICT,"Packet predates the current installation; retain it for historical recovery");
+        }
 
         for (SensorDataRequest.Reading reading : request.getReadings()) {
             MetricCode code = reading.getMetricCode();
@@ -191,6 +198,8 @@ public class IotDataService {
                     .metric(metric)
                     .deviceSetHistory(history)
                     .sampleKey(request.getSampleKey())
+                    .deviceMac(sensor.getDeviceSet()==null ? request.getMacAddress() : sensor.getDeviceSet().getMacAddress())
+                    .ingestSource(source)
                     .measuredValue(reading.getMeasuredValue())
                     .measuredAt(measuredAt)
                     .receivedAt(receivedAt)
@@ -200,6 +209,11 @@ public class IotDataService {
         }
     }
 
+    // DATETIME(6) stores microseconds; compare retries using the same precision before persistence.
+    private LocalDateTime databaseTime(LocalDateTime value) {
+        return value.plusNanos(500).truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+    }
+
     private String unitFor(MetricCode code) {
         return switch (code) {
             case GAS -> "UNVERIFIED";
@@ -207,26 +221,5 @@ public class IotDataService {
             case HUMIDITY -> "PERCENT";
             case CONTACT -> "BINARY";
         };
-    }
-
-    @Transactional
-    public void updateLocationByMac(String mac, Double latitude, Double longitude) {
-        String normalizedMac = (mac != null && mac.matches("[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}"))
-                ? mac.toUpperCase(Locale.ROOT) : (mac != null ? mac.trim() : "");
-        if (normalizedMac.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid MAC address");
-        }
-        Optional<DeviceSet> deviceSetOpt = deviceSetRepository.findByMacAddress(normalizedMac);
-        if (deviceSetOpt.isEmpty()) {
-            discoveredDeviceService.recordLocation(normalizedMac, latitude, longitude);
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Device set not found for MAC: " + normalizedMac);
-        }
-
-        DeviceSet deviceSet = deviceSetOpt.get();
-        Zone zone = deviceSet.getZone();
-        if (zone != null) {
-            zone.setLatitude(latitude);
-            zone.setLongitude(longitude);
-        }
     }
 }

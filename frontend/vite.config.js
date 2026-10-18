@@ -8,8 +8,8 @@ export default defineConfig(({ mode }) => {
   return {
   plugins: [react()],
   server: {
-    host: '0.0.0.0',
-    port: 5174,
+    host: env.VITE_DEV_HOST || '127.0.0.1',
+    port: Number(env.VITE_DEV_PORT || 5174),
     open: false,
     proxy: {
       '/api/kakao-transit': {

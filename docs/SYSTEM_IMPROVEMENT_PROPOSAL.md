@@ -92,8 +92,8 @@ flowchart TD
 
 ```sql
 -- [3-1] Zone 3 GPS 좌표 주입 (카카오맵 표출용)
-UPDATE zones 
-SET latitude = 37.566826, longitude = 126.978656 
+UPDATE zones
+SET latitude = 37.566826, longitude = 126.978656
 WHERE id = 3;
 
 -- [1-2] 미화원/담당자 테이블 신설

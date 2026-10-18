@@ -3,6 +3,8 @@ package com.tcp.cleanmanagement.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 
@@ -19,6 +21,7 @@ public class DailyChecklist {
     private Long zoneId;
 
     @Column(nullable = false)
+    @JdbcTypeCode(SqlTypes.LOCAL_DATE)
     private LocalDate checkDate;
 
     @Column(nullable = false, length = 64)
@@ -30,6 +33,5 @@ public class DailyChecklist {
 
     private Long completedBy;
 
-    @UpdateTimestamp
     private LocalDateTime completedAt;
 }

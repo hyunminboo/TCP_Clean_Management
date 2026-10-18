@@ -7,5 +7,5 @@ import java.util.List;
 public interface CleaningRecordRepository extends JpaRepository<CleaningRecord, Long> {
     List<CleaningRecord> findAllByOrderByCreatedAtDesc();
     List<CleaningRecord> findByZoneIdOrderByCreatedAtDesc(Long zoneId);
-    void deleteByZoneId(Long zoneId);
+    java.util.Optional<CleaningRecord> findFirstByZoneIdOrderByCreatedAtDescIdDesc(Long id);
 }

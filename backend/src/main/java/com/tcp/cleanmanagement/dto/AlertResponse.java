@@ -9,6 +9,7 @@ import java.time.LocalDateTime;
 @Data
 @Builder
 public class AlertResponse {
+    private String resolutionSource;
     private Long alertId;
     private Long zoneId;
     private String zoneName;
@@ -21,6 +22,9 @@ public class AlertResponse {
     private AlertType alertType;
     private AlertStatus status;
     private String message;
+    private String detectionSource;
+    private String modelVersion;
+    private String level;
     private LocalDateTime createdAt;
     private LocalDateTime resolvedAt;
     private String actionDetail;

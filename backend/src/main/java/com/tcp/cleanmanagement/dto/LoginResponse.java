@@ -6,16 +6,15 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.List;
-
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
 public class LoginResponse {
     private String token;
+    private java.time.OffsetDateTime expiresAt;
     private Long id;
     private String username;
     private Role role;
-    private List<Long> assignedZoneIds;
+    private java.util.List<Long> zoneIds;
 }

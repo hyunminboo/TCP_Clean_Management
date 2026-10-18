@@ -13,6 +13,7 @@ public class CleaningRecord {
     private Long id;
 
     private Long zoneId;
+    private Long createdBy;
     private String restroomName;
     private String worker;
     private String type;

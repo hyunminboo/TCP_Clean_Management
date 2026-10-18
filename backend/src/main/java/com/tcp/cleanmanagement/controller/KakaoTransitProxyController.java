@@ -34,6 +34,8 @@ public class KakaoTransitProxyController {
 
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<String> proxyTransit(@RequestParam Map<String, String> queryParams) {
+        if(queryParams.size()>12 || queryParams.entrySet().stream().anyMatch(e->e.getKey().length()>64||e.getValue()!=null&&e.getValue().length()>500))
+            return ResponseEntity.badRequest().body("{\"error\":\"INVALID_QUERY\"}");
         if (kakaoRestApiKey.isEmpty()) {
             return ResponseEntity.ok("{\"in_local\":false,\"reason\":\"KAKAO_REST_API_KEY_NOT_CONFIGURED\"}");
         }

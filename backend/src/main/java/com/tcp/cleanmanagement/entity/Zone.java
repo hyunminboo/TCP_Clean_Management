@@ -16,6 +16,8 @@ public class Zone {
 
     private String name;
     private String address;
+    @Column(length=8) private String floor;
+    @Column(length=8) private String gender;
     private Double latitude;
     private Double longitude;
 
